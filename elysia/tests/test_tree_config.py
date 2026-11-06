@@ -19,9 +19,10 @@ class TestTreeConfig:
 
         # should raise an error, no models set
         # TODO: settings from test_settings is overriding this, so error not being raised????
-        with pytest.raises(ValueError):
-            tree.get_lm("base")
-            tree.get_lm("complex")
+        assert isinstance(tree.get_lm("base"), dspy.LM)
+        assert isinstance(tree.get_lm("complex"), dspy.LM)
+        assert tree.base_lm is None
+        assert tree.complex_lm is None
 
         # change the base model
         configure(base_model="gpt-4o-mini", base_provider="openai")
@@ -141,3 +142,8 @@ class TestTreeConfig:
         assert isinstance(tree.settings.COMPLEX_MODEL_LM, dspy.LM)
 
         self.reset_global_settings()
+
+
+if __name__ == "__main__":
+    test = TestTreeConfig()
+    test.test_change_llm_in_tree_global()

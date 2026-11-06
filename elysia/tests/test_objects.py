@@ -4,7 +4,17 @@ import pytest
 from typing import Any
 from weaviate.classes.query import Filter, QueryReference
 
-from elysia.objects import Completed, Error, Response, Status, Text, Update, Warning
+from elysia.tree.objects import Environment
+from elysia.objects import (
+    Completed,
+    Error,
+    Response,
+    Status,
+    Text,
+    Update,
+    Warning,
+    Result,
+)
 from elysia.tools.objects import (
     BoringGeneric,
     Conversation,
@@ -316,3 +326,148 @@ class TestObjects:
                     which_chunk_spans_exist[ind] = True
 
         assert all(which_chunk_spans_exist.values())
+
+    def test_environment(self):
+        environment = Environment()
+
+        assert environment.is_empty()
+
+        res = Result(
+            objects=[{"a": 1, "b": 2}],
+            metadata={"metadata_a": "hello", "metadata_b": 10},
+            name="test_result",
+        )
+        environment.add(res, "test_tool")
+
+        assert not environment.is_empty()
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["a"]
+            == 1
+        )
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["b"]
+            == 2
+        )
+
+        assert environment.environment["test_tool"]["test_result"][0]["metadata"] == {
+            "metadata_a": "hello",
+            "metadata_b": 10,
+        }
+
+        found_item = environment.find("test_tool", "test_result")
+        assert found_item[0]["objects"][0]["a"] == 1
+        assert found_item[0]["objects"][0]["b"] == 2
+        assert found_item[0]["metadata"] == {
+            "metadata_a": "hello",
+            "metadata_b": 10,
+        }
+
+        found_item_index = environment.find("test_tool", "test_result", 0)
+        assert found_item_index["objects"][0]["a"] == 1
+        assert found_item_index["objects"][0]["b"] == 2
+        assert found_item_index["metadata"] == {
+            "metadata_a": "hello",
+            "metadata_b": 10,
+        }
+
+        environment.replace("test_tool", "test_result", [{"c": 3, "d": 4}])
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["c"]
+            == 3
+        )
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["d"]
+            == 4
+        )
+
+        environment.replace(
+            "test_tool", "test_result", [{"e": 5, "f": "hello"}], index=0
+        )
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["e"]
+            == 5
+        )
+        assert (
+            environment.environment["test_tool"]["test_result"][0]["objects"][0]["f"]
+            == "hello"
+        )
+
+        json_obj = environment.to_json()
+        assert "test_tool" in json_obj
+        assert "test_result" in json_obj["test_tool"]
+        assert json_obj["test_tool"]["test_result"][0]["objects"][0]["e"] == 5
+        assert json_obj["test_tool"]["test_result"][0]["objects"][0]["f"] == "hello"
+
+        environment.remove("test_tool", "test_result")
+        assert environment.is_empty()
+
+        environment.add_objects(
+            "test_tool2",
+            "test_result2",
+            [{"a": 1, "b": 2}],
+            metadata={"item_number": "first"},
+        )
+        assert "test_tool2" in environment.environment
+        assert "test_result2" in environment.environment["test_tool2"]
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["a"]
+            == 1
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["b"]
+            == 2
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["metadata"][
+                "item_number"
+            ]
+            == "first"
+        )
+
+        environment.add_objects(
+            "test_tool2",
+            "test_result2",
+            [{"c": 1, "d": 2}],
+            metadata={"item_number": "second"},
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][1]["objects"][0]["c"]
+            == 1
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][1]["objects"][0]["d"]
+            == 2
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][1]["metadata"][
+                "item_number"
+            ]
+            == "second"
+        )
+
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["a"]
+            == 1
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["b"]
+            == 2
+        )
+
+        environment.remove("test_tool2", "test_result2", 1)
+        assert environment.environment["test_tool2"]["test_result2"] != []
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["a"]
+            == 1
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["objects"][0]["b"]
+            == 2
+        )
+        assert (
+            environment.environment["test_tool2"]["test_result2"][0]["metadata"][
+                "item_number"
+            ]
+            == "first"
+        )
+        assert len(environment.environment["test_tool2"]["test_result2"]) == 1

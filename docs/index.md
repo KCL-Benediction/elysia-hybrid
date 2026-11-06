@@ -8,7 +8,7 @@ Or you could customise Elysia to your liking, create your own custom tools and a
 
 See the [basic example to get started right away!](basic.md)
 
-Or if you want to make your own tools and customise Elysia, see the [Tool Construction Overview](creating_your_own_tools.md).
+Or if you want to make your own tools and customise Elysia, see the [Tool Construction Overview](Customising/creating_your_own_tools.md).
 
 ## Usage
 

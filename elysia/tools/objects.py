@@ -22,7 +22,7 @@ class BoringGeneric(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="boring_generic",
+            payload_type="boring_generic",
             metadata=metadata,
             name=name,
             mapping=None,
@@ -61,7 +61,7 @@ class EpicGeneric(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="epic_generic",
+            payload_type="epic_generic",
             metadata=metadata,
             name=name,
             mapping=mapping,
@@ -95,7 +95,7 @@ class Document(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="document",
+            payload_type="document",
             metadata=metadata,
             name=name,
             mapping=mapping,
@@ -135,7 +135,7 @@ class Ticket(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="ticket",
+            payload_type="ticket",
             metadata=metadata,
             name=name,
             mapping=mapping,
@@ -179,7 +179,7 @@ class Ecommerce(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="ecommerce",
+            payload_type="ecommerce",
             metadata=metadata,
             name=name,
             mapping=mapping,
@@ -213,7 +213,7 @@ class Message(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="message",
+            payload_type="message",
             metadata=metadata,
             name=name,
             mapping=mapping,
@@ -249,7 +249,7 @@ class Conversation(Result):
         Result.__init__(
             self,
             objects=objects,
-            type="conversation",
+            payload_type="conversation",
             metadata=metadata,
             name=name,
             mapping=mapping,

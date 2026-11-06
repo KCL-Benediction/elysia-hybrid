@@ -3,9 +3,13 @@
 
 To create a custom Elysia tool, you just need to make a Python class that inherits `Tool` and add it to the decision tree via the `.add_tool` of the `Tree` object.
 
+This page will detail all relevant information for tool construction, to get started with an example, see
+- [A basic text response example](#example-text-response-basic)
+- [A more complex example dealing cards to Elysia](#example-dealing-cards-randomly-from-a-deck-intermediate)
+
 ## Initialisation
 
-The tool must be initialised with
+A tool must be initialised with
 ```python
     def __init__(self, **kwargs):
         # initialisation
@@ -28,7 +32,7 @@ The tool must be initialised with
     ```
     You can have as many inputs as you want, but similar to the description field, the descriptions here need to be informative so that the LLM knows exactly what to choose.
 - `end` (optional): A bool denoting whether the tool is capable of ending the entire decision tree. For example, a `text_response` tool can end the process, but a `query` tool cannot. This is because a query tool returns some information which is then parsed by the decision tree _afterwards_, to see if the retrieved information was worthwhile. Note that setting `end=True` does not guarantee that after this tool is finished running, the decision process ends, it only allows the model to choose that performing this action _can_ end the tree.
-- `rule` (optional): **[TODO, not implemented, may make this a separate class]** Whether this tool is actually a 'rule' tool. Rule tools are special types of tools that get called automatically if the `rule_call` method returns True. E.g., this could check how big the environment is, and condense it to only the most recent objects (not supported yet though).
+- `**kwargs` (required)
 
 ## Tool Call
 
@@ -45,7 +49,7 @@ The tool should have an _async_ `__call__` method,
 ```
 which has the following inputs:
 
-- `tree_data`, an object of type `TreeData` which contains some information about the state of the decision making process at this point.
+- `tree_data`, an object of type `TreeData` which contains some information about the state of the decision making process at this point. This is likely the most relevant data to use in your tool calls, if the tool will affect the decision tree in some way. Here, you can access the environment (via `tree_data.environment`), the tasks completed dictionary (`tree_data.tasks_completed`), the collection metadata (`tree_data.collection_data`) and more - [see here for all data you can access](../Reference/Objects.md#elysia.tree.objects.TreeData).
 - `inputs`: the inputs previously defined, formatted as 
     ```python
     {
@@ -65,23 +69,25 @@ which has the following inputs:
 
 The `__call__` method is automatically run when the LLM decision agent chooses to use that tool. You can use any of these inputs within your tool method and the code will be executed.
 
-Within the `__call__` method of the tool, you will want to interact with the decision tree in some way. There are multiple ways of doing this, all within the different objects that Elysia defines within `elysia.objects`.
+Within the `__call__` method of the tool, you will want to interact with the decision tree in some way. There are multiple ways of doing this, either via returning various objects that Elysia defines within `elysia.objects`, or by interacting with the environment.
 
 ### Returning Objects
 
-Within your tool's call method, you will want to `yield` different objects to bring them back to the tree.
+If you return an Elysia specific object, they will be returned to the decision tree and automatically parsed in different ways which automatically add the relevant objects to the environment, and send any payloads to the frontend.
 
-- Any class that inherits from the [`Update` class](Reference/Objects.md#elysia.objects.Update) will do something similar, but these are mostly just updates to the frontend. 
-- Any class that inherits from the [`Result` class](Reference/Objects.md#elysia.objects.Result) have their corresponding objects added to the tree's environment, which the decision agent will 'look at', so that it can continue making decisions and respond accordingly to the user.
+Within your tool's call method, you may want to `yield` different objects to bring them back to the tree.
+
+- Any class that inherits from the [`Update` class](../Reference/Objects.md#elysia.objects.Update) will send updates to the frontend, such as a status message.
+- Any class that inherits from the [`Result` class](../Reference/Objects.md#elysia.objects.Result) have their corresponding objects added to the tree's environment, which the decision agent will 'look at', so that it can continue making decisions and respond accordingly to the user. Then, if applicable, relevant payloads will be sent to the frontend.
 
 
 #### Update
 
 Some updates you can yield include:
 
-- **[`Status`](Reference/Objects.md#elysia.objects.Status)**: provide a single string argument - displays on the frontend or the progress bar a unique message.
-- **[`Warning`](Reference/Objects.md#elysia.objects.Warning)**: provide a single string argument - displays on a connected frontend a warning message.
-- **[`Error`](Reference/Objects.md#elysia.objects.Error)**: provide a single string argument - displays on a connected frontend an error message. *Note that this does not raise an error, just is a unique identifier to an error object.*
+- **[`Status`](../Reference/Objects.md#elysia.objects.Status)**: provide a single string argument - displays on the frontend or the progress bar a unique message.
+- **[`Warning`](../Reference/Objects.md#elysia.objects.Warning)**: provide a single string argument - displays on a connected frontend a warning message.
+- **[`Error`](../Reference/Objects.md#elysia.objects.Error)**: provide a single string argument - displays on a connected frontend an error message. *Note that this does not raise an error, just is a unique identifier to an error object.*
 
 
 #### Result
@@ -102,9 +108,18 @@ The arguments for the `Result` are:
  - `metadata`: a dictionary of metadata items. You can use this to separate global information from object-specific information.
  - `type`: a string describing the type of objects you are giving.
 
-[There are a few pre-made `Result` objects that you can use to add objects to the environment.](Reference/Result.md)
+[There are a few pre-made `Result` objects that you can use to add objects to the environment.](../Reference/Result.md)
 
 These specific pre-made `Result` objects also will show a custom display to the frontend also. For example, a document object will be shown on the frontend with the specific fields of the document. This has important considerations however, which we will discuss in the next section.
+
+### Interacting with the Environment
+
+[See here a full description of the methods that you can use to interact with the environment](environment.md).
+
+In short, the environment can be modified either by yielding `Result` objects, or by calling the environment methods explicitly. 
+You can do so via calling the `.add()`, `.add_objects()`, `.replace()` or `.remove()` from the `tree_data`.
+
+**Note:** If you add items to the environment and also yield a `Result` object with the same items, there will likely be duplicate items in the environment.
 
 ### Displaying Objects (Frontend Only)
 
@@ -145,7 +160,28 @@ yield Message(
 
 And this will both add the `objects` to the tree's environment, as well as displaying these messages specifically on the frontend.
 
-Note that the fields inside of `objects` need to conform to the correct properties as described in the reference, [see here for a full description of the fields in the reference.](Reference/Result.md)
+Note that the fields inside of `objects` need to conform to the correct properties as described in the reference, [see here for a full description of the fields in the reference.](../Reference/Result.md)
+
+## Elysia Chain of Thought
+
+An easy way to access attributes from the tree (if you are calling an LLM within the tool) is to use the custom `ElysiaChainOfThought` DSPy module with specific arguments. This automatically adds information from the `tree_data` to an LLM prompt as inputs in a DSPy signature, as well as some specific outputs deemed useful within the decision tree environment (and a chain of thought reasoning field output field).
+
+To call this, you can do, for example
+```python
+from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
+text_response = ElysiaChainOfThought(
+    MyCustomSignature, # a dspy signature needing to be defined
+    tree_data=tree_data, # tree_data input from the tool
+    message_update: bool = True,
+    environment: bool = False,
+    collection_schemas: bool = False,
+    tasks_completed: bool = False,
+    collection_names: list[str] = [],
+)
+```
+By setting the boolean flags for the different variables, you can control the inputs and outputs assigned, whereas some inputs are always included (such as user prompt).
+
+See the description for more details **(WIP: not described yet)**
 
 ## Adding Tools to the Tree
 
@@ -172,17 +208,17 @@ If `run_if_true` returns `True`, then the `__call__` method of your tool will be
 - The `run_if_true` method can count the number of tokens in the environment, and if the environment is getting too large, it runs the tool. Then the `__call__` method will be shrinking the environment in some way (e.g. using an LLM or just taking one particular item from it).
 - If the user is asking about a particular subject, e.g. if the `user_prompt` (inside of `tree_data`) contains a specific word, then you could augment the `tree_data` to include some more specific information.
 
-Like the `__call__` and `is_tool_available` methods, this method has access to [the tree data](Reference/Objects.md#elysia.tree.objects.TreeData) object, as well as some language models used by the tree and the [ClientManager](Reference/Client.md#elysia.util.client.ClientManager), to use a Weaviate client.
+Like the `__call__` and `is_tool_available` methods, this method has access to [the tree data](../Reference/Objects.md#elysia.tree.objects.TreeData) object, as well as some language models used by the tree and the [ClientManager](../Reference/Client.md#elysia.util.client.ClientManager), to use a Weaviate client.
 
-[See the reference for more details.](Reference/Objects.md#elysia.objects.Tool.run_if_true)
+[See the reference for more details.](../Reference/Objects.md#elysia.objects.Tool.run_if_true)
 
 ### `is_tool_available`
 
 This method should return `True` if the tool is available to be used by the LLM. It should return `False` if the LLM should not have access to it. This can depend on the environment. For example, you can use `tree_data.environment.is_empty()` and the tool is only accessible if the environment is empty. Likewise you can use `not tree_data.environment.is_empty()` for it only to be available if the environment has something in it.
 
-Like the `__call__` and `run_if_true` methods, this method has access to [the tree data](Reference/Objects.md#elysia.tree.objects.TreeData) object, as well as some language models used by the tree and the [ClientManager](Reference/Client.md#elysia.util.client.ClientManager), to use a Weaviate client.
+Like the `__call__` and `run_if_true` methods, this method has access to [the tree data](../Reference/Objects.md#elysia.tree.objects.TreeData) object, as well as some language models used by the tree and the [ClientManager](../Reference/Client.md#elysia.util.client.ClientManager), to use a Weaviate client.
 
-[See the reference for more details.](Reference/Objects.md#elysia.objects.Tool.is_tool_available)
+[See the reference for more details.](../Reference/Objects.md#elysia.objects.Tool.is_tool_available) 
 
 ## Example: Text Response (basic)
 
@@ -195,17 +231,13 @@ from elysia.tree.objects import TreeData
 from elysia.util.client import ClientManager
 from elysia.util.reference import create_reference
 from elysia.tools.text.prompt_templates import TextResponsePrompt
-class TextResponse(Tool):
+from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
 
+class TextResponse(Tool):
     def __init__(self, **kwargs):
         super().__init__(
-            name="text_response",
-            description="""
-            One way to end the conversation.
-            Can use when no other tools are suitable.
-            This should be used when the user has finished their query, 
-            or you have nothing more to do except reply.
-            """,
+            name="final_text_response",
+            description="",
             status="Writing response...",
             inputs={},
             end=True,
@@ -220,24 +252,25 @@ class TextResponse(Tool):
         client_manager: ClientManager | None = None,
         **kwargs
     ):
-        text_response = dspy.Predict(TextResponsePrompt)
-        text_response = dspy.asyncify(text_response)
+        text_response = ElysiaChainOfThought(
+            TextResponsePrompt,
+            tree_data=tree_data,
+            environment=True,
+            tasks_completed=True,
+            message_update=False,
+        )
 
-        output = await text_response(
-            user_prompt=tree_data.user_prompt,
-            reference=create_reference(),
-            environment=tree_data.environment.to_json(),
-            conversation_history=tree_data.conversation_history,
+        output = await text_response.aforward(
             lm=base_lm,
         )
 
         yield Response(text=output.response)
 ```
 
-The tool is simple, it is initialised and the descriptions are added to the Tool. Then the `__call__` method simply runs the text_response agent. Whilst the `TextResponsePrompt` is not shown here, it is a simple input -> output call, where different parts of the `tree_data` are used as inputs to the LLM to give it context before answering.
+The tool is simple, it is initialised and the descriptions are added to the Tool. Then the `__call__` method simply runs the text_response agent. Whilst the `TextResponsePrompt` is not shown here, it is a simple input -> output call, where different parts of the `tree_data` are used as inputs to the LLM to give it context before answering. The relevant information from the `tree_data` are automatically inserted into the prompt via the `ElysiaChainOfThought` custom DSPy module.
 
 
-**Note:** If using DSPy within your tool, make sure to always call `dspy.asyncify` on the module so that it can be used async.
+**Note:** If using DSPy within your tool, make sure to always call `aforward` method on the module so that it can be used async.
 
 
 ## Example: Dealing Cards Randomly from a Deck (intermediate)

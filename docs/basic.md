@@ -84,7 +84,7 @@ tree = Tree()
 response, objects = tree("what were the 10 most recent Github issues?")
 ```
 
-The Elysia decision tree will return the text response from the models, as well as any retrieved objects (anything that was added to the environment).
+The Elysia decision tree will return the text response from the models, as well as any retrieved objects (anything that was added to the environment during this call).
 
 ```python
 print(response)

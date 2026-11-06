@@ -30,8 +30,20 @@ nav:
   - Getting Started: index.md
   - Basic Usage: basic.md
   - Advanced Usage: advanced_usage.md
-  - Tool Construction: creating_your_own_tools.md
   - Preprocessing: preprocess.md
+  - Customising Elysia:
+    - Overview: Customising/index.md
+    - Technical Overview: Customising/technical_overview.md
+    - Tool Construction: Customising/creating_your_own_tools.md
+    - Custom Objects: Customising/custom_objects.md
+    - Environment: Customising/environment.md
+  - API: 
+    - Overview: API/index.md
+    - Client Management: API/client_management.md
+    - User Management: API/user_management.md
+    - Routes: API/routes.md
+    - Payload Formats: API/payload_formats.md
+ 
   - Examples:
     # - Intermediate: Examples/02_intermediate.md
     - Sentiment Analysis: Examples/sentiment_analysis.md

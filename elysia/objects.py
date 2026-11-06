@@ -268,13 +268,15 @@ class Result(Return):
     Result objects are returned to the frontend.
     These are displayed on the frontend.
     E.g. a table, a chart, a text response, etc.
+
+    You can yield a `Result` directly, and specify the `type` and `name` of the result.
     """
 
     def __init__(
         self,
         objects: list[dict],
-        type: str = "default",
         metadata: dict = {},
+        payload_type: str = "default",
         name: str = "generic",
         mapping: dict | None = None,
         llm_message: str | None = None,
@@ -283,7 +285,7 @@ class Result(Return):
         """
         Args:
             objects (list[dict]): The objects attached to this result.
-            type: (str): Identifier for the type of result.
+            payload_type: (str): Identifier for the type of result.
             metadata (dict): The metadata attached to this result,
                 for example, query used, time taken, any other information not directly within the objects
             name (str): The name of the result, e.g. this could be the name of the collection queried.
@@ -292,9 +294,15 @@ class Result(Return):
                 Essentially, if the objects are going to be displayed on the frontend, the frontend has specific keys that it wants the objects to have.
                 This is a dictionary that maps from frontend keys to the object keys.
             llm_message (str | None): A message to be displayed to the LLM to help it parse the result.
+                You can use the following placeholders that will automatically be replaced with the correct values:
+
+                - {type}: The type of the object
+                - {name}: The name of the object
+                - {num_objects}: The number of objects in the object
+                - {metadata_key}: Any key in the metadata dictionary
             unmapped_keys (list[str]): A list of keys that are not mapped to the frontend.
         """
-        Return.__init__(self, "result", type)
+        Return.__init__(self, "result", payload_type)
         self.objects = objects
         self.metadata = metadata
         self.name = name
@@ -330,38 +338,56 @@ class Result(Return):
 
         You can use the following placeholders:
 
-        - {type}: The type of the object
+        - {payload_type}: The type of the object
         - {name}: The name of the object
         - {num_objects}: The number of objects in the object
         - {metadata_key}: Any key in the metadata dictionary
         """
         return self.llm_message.format_map(
             {
-                "type": self.payload_type,
+                "payload_type": self.payload_type,
                 "name": self.name,
                 "num_objects": len(self),
                 **self.metadata,
             }
         )
 
+    def do_mapping(self, objects: list[dict]):
+
+        output_objects = []
+        for obj in objects:
+            output_objects.append(
+                {
+                    key: obj[self.mapping[key]]
+                    for key in self.mapping
+                    if self.mapping[key] != ""
+                }
+            )
+            output_objects[-1].update(
+                {key: obj[key] for key in self.unmapped_keys if key in obj}
+            )
+
+        return output_objects
+
     def to_json(self, mapping: bool = False):
+        """
+        Convert the result to a list of dictionaries.
+
+        Args:
+            mapping (bool): Whether to map the objects to the frontend.
+                This will use the `mapping` dictionary created on initialisation of the `Result` object.
+                If `False`, the objects are returned as is.
+                Defaults to `False`.
+
+        Returns:
+            list[dict]: A list of dictionaries, which can be serialised to JSON.
+        """
         assert all(
             isinstance(obj, dict) for obj in self.objects
         ), "All objects must be dictionaries"
 
         if mapping and self.mapping is not None:
-            output_objects = []
-            for obj in self.objects:
-                output_objects.append(
-                    {
-                        key: obj[self.mapping[key]]
-                        for key in self.mapping
-                        if self.mapping[key] != ""
-                    }
-                )
-                output_objects[-1].update(
-                    {key: obj[key] for key in self.unmapped_keys if key in obj}
-                )
+            output_objects = self.do_mapping(self.objects)
         else:
             output_objects = self.objects
 
@@ -376,6 +402,37 @@ class Result(Return):
         conversation_id: str,
         query_id: str,
     ):
+        """
+        Convert the result to a frontend payload.
+        This is a wrapper around the `to_json` method.
+        But the objects and metadata are inside a `payload` key, which also includes a `type` key,
+        being the frontend identifier for the type of payload being sent.
+        (e.g. `ticket`, `ecommerce`, `message`, etc.)
+
+        The outside of the payload also contains the user_id, conversation_id, and query_id.
+
+        Args:
+            user_id (str): The user ID.
+            conversation_id (str): The conversation ID.
+            query_id (str): The query ID.
+
+        Returns:
+            dict: The frontend payload, which is a dictionary with the following structure:
+                ```python
+                {
+                    "type": "result",
+                    "user_id": str,
+                    "conversation_id": str,
+                    "query_id": str,
+                    "id": str,
+                    "payload": dict = {
+                        "type": str,
+                        "objects": list[dict],
+                        "metadata": dict,
+                    },
+                }
+                ```
+        """
         objects = self.to_json(mapping=True)
         if len(objects) == 0:
             return
@@ -396,6 +453,16 @@ class Result(Return):
         }
 
     def llm_parse(self):
+        """
+        This method is called when the result is displayed to the LLM.
+        It is used to display custom information to the LLM about the result.
+        If `llm_message` was defined, then the llm message is formatted using the placeholders.
+        Otherwise a default message is used.
+
+        Returns:
+            str: The formatted llm message.
+        """
+
         if self.llm_message is not None:
             return self.format_llm_message()
         else:
@@ -412,7 +479,7 @@ class Retrieval(Result):
     def __init__(
         self,
         objects: list[dict],
-        type: str = "default",
+        payload_type: str = "default",
         name: str | None = None,
         metadata: dict = {},
         mapping: dict | None = None,
@@ -426,7 +493,7 @@ class Retrieval(Result):
         Result.__init__(
             self,
             objects=objects,
-            type=type,
+            payload_type=payload_type,
             metadata=metadata,
             name=name,
             mapping=mapping,

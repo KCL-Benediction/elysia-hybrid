@@ -42,7 +42,7 @@ See the reference page for more details (**WIP not written yet**)
 
 ## Adding Tools
 
-Coming soon, when there's more default tools available. For now, see the [tool construction overview](creating_your_own_tools.md).
+Coming soon, when there's more default tools available. For now, see the [tool construction overview](Customising/creating_your_own_tools.md).
 
 ## Changing the Style, Agent Description or End Goal
 

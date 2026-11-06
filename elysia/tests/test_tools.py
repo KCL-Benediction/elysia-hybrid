@@ -55,7 +55,7 @@ class RunIfTrueFalseTool(Tool):
         tree_data.environment.add(
             Result(
                 objects=[{"message": "Rule tool called!!!"}],
-                type="text",
+                payload_type="text",
                 name="rule_tool",
             ),
             "rule_tool",
@@ -96,7 +96,7 @@ class RunIfTrueTrueTool(Tool):
         tree_data.environment.add(
             Result(
                 objects=[{"message": "Rule tool called!!!"}],
-                type="text",
+                payload_type="text",
                 name="rule_tool",
             ),
             "rule_tool",

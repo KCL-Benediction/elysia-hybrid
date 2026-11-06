@@ -34,33 +34,8 @@ def construct_decision_prompt(
         """
 
         # Regular input fields
-        user_prompt: str = dspy.InputField(
-            description="The user's original question/prompt that needs to be answered"
-        )
         instruction: str = dspy.InputField(
             description="Specific guidance for this decision point that must be followed"
-        )
-        atlas: Atlas = dspy.InputField(
-            description="Your guide to how you should proceed as an agent in this task."
-        )
-        conversation_history: list[dict] = dspy.InputField(
-            description="""
-            Previous messages between user and assistant in chronological order:
-            [{"role": "user"|"assistant", "content": str}]
-            Use this to maintain conversation context and avoid repetition.
-            """.strip()
-        )
-
-        # Collection information for user to ask basic questions about collection
-        collection_schemas: dict = dspy.InputField(
-            description="""
-            Metadata about available collections and their schemas:
-            { name: { summary, fields: { min, max, type, etc. } }
-            Where name is the name of the collection, and summary is a short description of the collection.
-            The statistics such as min/max is of the data in the field. If this is numerical, this is the range of values in the data.
-            If string, it is the length of the string. If it is a list, it is related to the length of the list.
-            Use to determine if user's request is possible with available data.
-            """.strip()
         )
 
         tree_count: str = dspy.InputField(
@@ -69,16 +44,6 @@ def construct_decision_prompt(
             - X = current attempt number
             - Y = maximum allowed attempts
             Consider ending the process as X approaches Y.
-            """.strip()
-        )
-
-        tasks_completed: str = dspy.InputField(
-            description="""
-            Which tasks have been completed in order. These are numbered so that higher numbers are more recent.
-            Separated by prompts (so you should identify the prompt you are currently working on to see what tasks have been completed so far)
-            Also includes reasoning for each task, to continue a decision logic across tasks.
-            Use this to determine whether future searches, for this prompt are necessary, and what task(s) to choose.
-            It is IMPORTANT that you separate what actions have been completed for which prompt, so you do not think you have failed an attempt for a different prompt.
             """.strip()
         )
 
@@ -95,17 +60,6 @@ def construct_decision_prompt(
                 }
             }
             """.strip()
-        )
-
-        environment: str = dspy.InputField(
-            description="""
-            Information gathered from completed tasks.
-            Empty if no data has been retrieved yet.
-            Use to determine if more information is needed.
-            All items here are already shown to the user, so do not repeat information from these fields unless summarising, providing extra information or otherwise.
-            E.g., do not list out anything from here, only provide new content to the user.
-            """.strip(),
-            format=str,
         )
 
         function_name: ActionLiteral = dspy.OutputField(

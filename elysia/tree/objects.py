@@ -12,10 +12,15 @@ class Environment:
     """
     Store of all objects across different types of queries and responses.
 
-    The environment is formatted as follows:
+    The environment is how the tree stores all objects across different types of queries and responses.
+    This includes things like retrieved objects, retrieved metadata, retrieved summaries, etc.
+
+    This is persistent across the tree, so that all agents are aware of the same objects.
+
+    The environment is formatted and keyed as follows:
     ```python
     {
-        "function_name": {
+        "tool_name": {
             "result_name": [
                 {
                     "metadata": dict,
@@ -27,84 +32,138 @@ class Environment:
     }
     ```
 
-    Where `"function_name"` is the name of the function that the result belongs to,
-    e.g. if the result came from a tool called `"query"`, then `"function_name"` is `"query"`.
+    Where `"tool_name"` is the name of the function that the result belongs to,
+    e.g. if the result came from a tool called `"query"`, then `"tool_name"` is `"query"`.
 
-    `"result_name"` is the name of the Result object, e.g. if the result is a list of objects, then `"result_name"` is `"objects"`.
+    `"result_name"` is the name of the Result object, which can be customised,
+    e.g. if the result comes from a specific collection, then `"result_name"` is the name of the collection.
 
-    `"metadata"` is the metadata of the result, e.g. the time taken to retrieve the result, the query used, etc.
+    `"metadata"` is the metadata of the result,
+    e.g. the time taken to retrieve the result, the query used, etc.
 
+    `"objects"` is the list of objects retrieved from the result. This is a list of dictionaries, where each dictionary is an object.
+    It is important that `objects` should have be list of dictionaries.
+    e.g. each object that was returned from a retrieval, where the fields of each dictionary are the fields of the object returned.
 
+    Each list under `result_name` is a dictionary with both `metadata` and `objects` keys.
+    This is if, for example, you retrieve multiple objects from the same collection, each one is stored with different metadata.
+    Because, for example, the query used to retrieve each object may be different (and stored differently in the metadata).
+
+    The environment is initialised with a default "SelfInfo.generic" key, which is a list of one object, containing information about Elysia itself.
+
+    You can use various methods to add, remove, replace, and find objects in the environment. See the methods below for more information.
     """
 
-    def __init__(self, environment: dict[str, dict[str, List[Result]]] = {}):
+    def __init__(
+        self,
+        environment: dict[str, dict[str, List[Result]]] = {},
+        self_info: bool = True,
+    ):
         self.environment = environment
+        if self_info:
+            self.environment["SelfInfo"] = {}
+            self.environment["SelfInfo"]["generic"] = [
+                {
+                    "name": "Elysia",
+                    "description": "An agentic RAG service in Weaviate.",
+                    "purpose": remove_whitespace(
+                        """Elysia is an agentic retrieval augmented generation (RAG) service, where users can query from Weaviate collections,
+                    and the assistant will retrieve the most relevant information and answer the user's question. This includes a variety
+                    of different ways to query, such as by filtering, sorting, querying multiple collections, and providing summaries
+                    and textual responses.
 
-        self.environment["SelfInfo"] = {}
-        self.environment["SelfInfo"]["generic"] = [
-            {
-                "name": "Elysia",
-                "description": "An agentic RAG service in Weaviate.",
-                "purpose": remove_whitespace(
-                    """Elysia is an agentic retrieval augmented generation (RAG) service, where users can query from Weaviate collections,
-                and the assistant will retrieve the most relevant information and answer the user's question. This includes a variety
-                of different ways to query, such as by filtering, sorting, querying multiple collections, and providing summaries
-                and textual responses.
+                    Elysia will dynamically display retrieved objects from the collections in the frontend.
+                    Elysia works via a tree-based approach, where the user's question is used to generate a tree of potential
+                    queries to retrieve the most relevant information.
+                    Each end of the tree connects to a separate agent that will perform a specific task, such as retrieval, aggregation, or generation, or more.
 
-                Elysia will dynamically display retrieved objects from the collections in the frontend.
-                Elysia works via a tree-based approach, where the user's question is used to generate a tree of potential
-                queries to retrieve the most relevant information.
-                Each end of the tree connects to a separate agent that will perform a specific task, such as retrieval, aggregation, or generation, or more.
+                    The tree itself has decision nodes that determine the next step in the query.
+                    The decision nodes are decided via a decision-agent, which decides the task.
 
-                The tree itself has decision nodes that determine the next step in the query.
-                The decision nodes are decided via a decision-agent, which decides the task.
+                    The agents communicate via a series of different prompts, which are stored in the prompt-library.
+                    The decision-agent prompts are designed to be as general as possible, so that they can be used for a variety of different tasks.
+                    Some of these variables include conversation history, retrieved objects, the user's original question, train of thought via model reasoning, and more.
 
-                The agents communicate via a series of different prompts, which are stored in the prompt-library.
-                The decision-agent prompts are designed to be as general as possible, so that they can be used for a variety of different tasks.
-                Some of these variables include conversation history, retrieved objects, the user's original question, train of thought via model reasoning, and more.
-
-                The backend of Elysia is built with a range of libraries. Elysia is built with a lot of base python, and was constructed from the ground up to keep it as modular as possible.
-                The LLM components are built with DSPy, a library for training and running LLMs.
-                You are likely to be using a trained prompt, trained with DSPy's MIPRO or Bootstrap methods.
-                This improves the quality of the responses by optimising the language of the prompt itself, as well as some examples for few-shot learning.
-                """
-                ),
-            }
-        ]
+                    The backend of Elysia is built with a range of libraries. Elysia is built with a lot of base python, and was constructed from the ground up to keep it as modular as possible.
+                    The LLM components are built with DSPy, a library for training and running LLMs.
+                    """
+                    ),
+                }
+            ]
 
     def is_empty(self):
         """
         Check if the environment is empty.
-        This is different from simply checking the length of the environment,
-        as the environment is initialised with a default "SelfInfo" key.
+
+        The "SelfInfo" key is not counted towards the empty environment.
+
+        If the `.remove` method has been used, this is accounted for (e.g. empty lists count towards an empty environment).
         """
-        empty = list(self.environment.keys()) == ["SelfInfo"]
-        empty = empty and len(self.environment["SelfInfo"].keys()) == 1
-        empty = empty and len(self.environment["SelfInfo"]["generic"]) == 1
+        empty = True
+        for tool_key in self.environment.keys():
+            if tool_key == "SelfInfo":
+                continue
+
+            for result_key in self.environment[tool_key].keys():
+                if len(self.environment[tool_key][result_key]) > 0:
+                    empty = False
+                    break
         return empty
 
-    def add(self, result: Result, function_name: str):
+    def add(self, result: Result, tool_name: str):
         """
         Adds a result to the environment.
         Is called automatically by the tree when a result is returned from an agent.
 
+        You can also add a result to the environment manually by using this method.
+        In this case, you must be adding a 'Result' object (which has an implicit 'name' attribute used to key the environment).
+        If you want to add something manually, you can use the `add_objects` method.
+
+        Each item is added with a `_REF_ID` attribute, which is a unique identifier used to identify the object in the environment.
+        If duplicate objects are detected, they are added with a special `REPEAT_ID` entry detailing that they are a duplicate,
+        as well as the `_REF_ID` of the original object.
+
         Args:
             result (Result): The result to add to the environment.
-            function_name (str): The name of the function that the result belongs to.
+            tool_name (str): The name of the tool called that the result belongs to.
         """
         objects = result.to_json()
         name = result.name
+        metadata = result.metadata
+        if tool_name not in self.environment:
+            self.environment[tool_name] = {}
 
-        if function_name not in self.environment:
-            self.environment[function_name] = {}
+        self.add_objects(tool_name, name, objects, metadata)
 
-        if name not in self.environment[function_name]:
-            self.environment[function_name][name] = []
+    def add_objects(
+        self, tool_name: str, name: str, objects: list[dict], metadata: dict = {}
+    ):
+        """
+        Adds an object to the environment.
+        Is not called automatically by the tree, so you must manually call this method.
+        This is useful if you want to add an object to the environment manually that doesn't come from a Result object.
+
+        Each item is added with a `_REF_ID` attribute, which is a unique identifier used to identify the object in the environment.
+        If duplicate objects are detected, they are added with a special `REPEAT_ID` entry detailing that they are a duplicate,
+        as well as the `_REF_ID` of the original object.
+
+        Args:
+            tool_name (str): The name of the tool called that the result belongs to.
+            name (str): The name of the result.
+            objects (list[dict]): The objects to add to the environment.
+            metadata (dict): Optional. The metadata of the objects to add to the environment.
+                Defaults to an empty dictionary.
+        """
+        if tool_name not in self.environment:
+            self.environment[tool_name] = {}
+
+        if name not in self.environment[tool_name]:
+            self.environment[tool_name][name] = []
 
         if len(objects) > 0:
-            self.environment[function_name][name].append(
+            self.environment[tool_name][name].append(
                 {
-                    "metadata": result.metadata,
+                    "metadata": metadata,
                     "objects": [],
                 }
             )
@@ -113,7 +172,7 @@ class Environment:
                 # check if the object is already in the environment
                 obj_found = False
                 where_obj = None
-                for env_item in self.environment[function_name][name]:
+                for env_item in self.environment[tool_name][name]:
                     if obj in env_item["objects"]:
                         obj_found = True
                         where_obj = env_item["objects"].index(obj)
@@ -121,27 +180,104 @@ class Environment:
                         break
 
                 if obj_found:
-                    self.environment[function_name][name][-1]["objects"].append(
+                    self.environment[tool_name][name][-1]["objects"].append(
                         {
                             "object_info": f"[repeat]",
                             "REPEAT_ID": _REF_ID,
                         }
                     )
                 else:
-                    _REF_ID = f"{function_name}_{name}_{len(self.environment[function_name][name])}_{i}"
-                    self.environment[function_name][name][-1]["objects"].append(
+                    _REF_ID = f"{tool_name}_{name}_{len(self.environment[tool_name][name])}_{i}"
+                    self.environment[tool_name][name][-1]["objects"].append(
                         {
                             "_REF_ID": _REF_ID,
                             **obj,
                         }
                     )
 
-    def find(self, function_name: str, name: str):
-        if function_name not in self.environment:
+    def remove(self, tool_name: str, name: str, index: int | None = None):
+        """
+        Replaces the list of objects for the given `tool_name` and `name` with an empty list.
+
+        Args:
+            tool_name (str): The name of the tool called that the result belongs to.
+            name (str): The name of the result.
+            index (int | None): The index of the object to remove.
+                If `None`, the entire list corresponding to `tool_name`/`name` is deleted.
+                If an integer, the object at the given index is removed.
+                Defaults to `None`.
+                If `index=-1`, the last object is removed.
+        """
+        if tool_name in self.environment:
+            if name in self.environment[tool_name]:
+                if index is None:
+                    self.environment[tool_name][name] = []
+                else:
+                    self.environment[tool_name][name].pop(index)
+
+    def replace(
+        self,
+        tool_name: str,
+        name: str,
+        objects: list[dict],
+        metadata: dict = {},
+        index: int | None = None,
+    ):
+        """
+        Replaces the list of objects for the given `tool_name` and `name` with the given list of objects.
+
+        Args:
+            tool_name (str): The name of the tool called that the result belongs to.
+            name (str): The name of the result.
+            objects (list[dict]): The objects to replace the existing objects with.
+            metadata (dict): The metadata of the objects to replace the existing objects with.
+            index (int | None): The index of the object to replace.
+                If `None`, the entire list corresponding to `tool_name`/`name` is deleted and replaced with the new objects.
+                If an integer, the object at the given index is replaced with the new objects.
+                Defaults to `None`.
+        """
+        if tool_name in self.environment:
+            if name in self.environment[tool_name]:
+                if index is None:
+                    self.environment[tool_name][name] = [
+                        {
+                            "metadata": metadata,
+                            "objects": objects,
+                        }
+                    ]
+                else:
+                    self.environment[tool_name][name][index] = {
+                        "metadata": metadata,
+                        "objects": objects,
+                    }
+
+    def find(self, tool_name: str, name: str, index: int | None = None):
+        """
+        Finds a corresponding list of objects in the environment.
+        Keyed via `tool_name` and `name`. See the base class description for more information on how the environment is keyed.
+
+        Args:
+            tool_name (str): The name of the tool called that the result belongs to.
+            name (str): The name of the result.
+            index (int | None): The index of the object to find.
+                If `None`, the entire list corresponding to `tool_name`/`name` is returned.
+                If an integer, the object at the given index is returned.
+
+        Returns:
+            list[dict]: The list of objects for the given `tool_name` and `name`, if `index` is `None`.
+            dict: The object at the given `index` for the given `tool_name` and `name`, if `index` is an integer.
+            None if the `tool_name` or `name` is not found in the environment.
+        """
+
+        if tool_name not in self.environment:
             return None
-        if name not in self.environment[function_name]:
+        if name not in self.environment[tool_name]:
             return None
-        return self.environment[function_name][name]
+
+        if index is None:
+            return self.environment[tool_name][name]
+        else:
+            return self.environment[tool_name][name][index]
 
     def to_json(self):
         """
@@ -185,6 +321,14 @@ class Atlas(BaseModel):
 
 
 class CollectionData:
+    """
+    Store of data about the Weaviate collections that are used in the tree.
+    These are the output of the `preprocess` function.
+
+    You do not normally need to interact with this class directly.
+    Instead, do so via the `TreeData` class, which has corresponding methods to get the data in a variety of formats.
+    (Such as via the `output_full_metadata` method.)
+    """
 
     def __init__(self, collection_names: list[str], logger: Logger | None = None):
         self.collection_names = collection_names
@@ -314,6 +458,31 @@ class TreeData:
     such as a string with extra description.
     E.g. the number of trees completed is converted into a string (i/N)
          and additional warnings if i is close to N.
+
+    The TreeData has the following objects:
+
+    - collection_data (CollectionData): The collection metadata/schema, which contains information about the collections used in the tree.
+        This is the store of data that is saved by the `preprocess` function, and retrieved on initialisation of this object.
+    - atlas (Atlas): The atlas, described in the Atlas class.
+    - user_prompt (str): The user's prompt.
+    - conversation_history (list[dict]): The conversation history stored in the current tree, of the form:
+        ```python
+        [
+            {
+                "role": "user" | "assistant",
+                "content": str,
+            },
+            ...
+        ]
+        ```
+    - environment (Environment): The environment, described in the Environment class.
+    - tasks_completed (list[dict]): The tasks completed as a list of dictionaries.
+        This is separate from the environment, as it separates what tasks were completed in each prompt in which order.
+    - num_trees_completed (int): The current level of the decision tree, how many iterations have been completed so far.
+    - recursion_limit (int): The maximum number of iterations allowed in the decision tree.
+
+    In general, you should not initialise this class directly.
+    But you can access the data in this class to access the relevant data from the tree (in e.g. tool construction/usage).
     """
 
     def __init__(
@@ -327,27 +496,6 @@ class TreeData:
         num_trees_completed: int = 0,
         recursion_limit: int = 3,
     ):
-        """
-        Args:
-            collection_data (CollectionData): The collection data to use for the tree, described in the CollectionData class.
-            atlas (Atlas): The atlas, described in the Atlas class.
-            user_prompt (str): The user's prompt.
-            conversation_history (list[dict]): The conversation history stored in the current tree, of the form:
-                ```python
-                [
-                    {
-                        "role": "user" | "assistant",
-                        "content": str,
-                    },
-                    ...
-                ]
-                ```
-            environment (Environment): The environment, described in the Environment class.
-            tasks_completed (list[dict]): The tasks completed as a list of dictionaries.
-                This is separate from the environment, as it separates what tasks were completed in each prompt in which order.
-            num_trees_completed (int): The current level of the decision tree, how many iterations have been completed so far.
-            recursion_limit (int): The maximum number of iterations allowed in the decision tree.
-        """
         # -- Base Data --
         self.user_prompt = user_prompt
         self.conversation_history = conversation_history
@@ -530,23 +678,31 @@ class TreeData:
                 ```python
                 {
                     # summary statistics of each field in the collection
-                        "fields": dict = {
-                            field_name_1: dict = {
+                    "fields": dict = {
+                        field_name_1: dict = {
                             "description": str,
                             "range": list[float],
                             "type": str,
                             "groups": list[str],
                             "mean": float
                         },
-                        field_name_2: dict,
+                        field_name_2: dict = {
+                            ... # same fields as above
+                        },
                         ...
                     },
 
                     # mapping_1, mapping_2 etc refer to frontend-specific types that the AI has deemed appropriate for this data
                     # then the dict is to map the frontend fields to the data fields
                     "mappings": dict = {
-                        mapping_1: dict,
-                        mapping_2: dict,
+                        mapping_1: dict = {
+                            "frontend_field_1": "data_field_1",
+                            "frontend_field_2": "data_field_2",
+                            ...
+                        },
+                        mapping_2: dict = {
+                            ... # same fields as above
+                        },
                         ...,
                     },
 
@@ -559,8 +715,12 @@ class TreeData:
                     # name of collection
                     "name": str,
 
-                    # what named vectors are available (if any)
-                    "named_vectors": list = [],
+                    # what named vectors are available and their properties (if any)
+                    "named_vectors": dict = {
+                        "enabled": bool,
+                        "source_properties": list,
+                        "description": str # defaults to empty
+                    },
 
                     # some config settings relevant for queries
                     "index_properties": {

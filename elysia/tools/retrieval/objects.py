@@ -33,7 +33,7 @@ class EpicGenericRetrieval(EpicGeneric, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="epic_generic",
+            payload_type="epic_generic",
             metadata=metadata,
             mapping=mapping,
         )
@@ -50,7 +50,7 @@ class BoringGenericRetrieval(BoringGeneric, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="boring_generic",
+            payload_type="boring_generic",
             metadata=metadata,
             mapping=mapping,
         )
@@ -67,7 +67,7 @@ class EcommerceRetrieval(Ecommerce, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="ecommerce",
+            payload_type="ecommerce",
             metadata=metadata,
             mapping=mapping,
         )
@@ -84,7 +84,7 @@ class TicketRetrieval(Ticket, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="ticket",
+            payload_type="ticket",
             metadata=metadata,
             mapping=mapping,
         )
@@ -104,7 +104,7 @@ class MessageRetrieval(Message, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="message",
+            payload_type="message",
             metadata=metadata,
             mapping=mapping,
             unmapped_keys=["uuid", "summary", "collection_name", "relevant"],
@@ -122,7 +122,7 @@ class ConversationRetrieval(Conversation, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="conversation",
+            payload_type="conversation",
             metadata=metadata,
             mapping=mapping,
             unmapped_keys=["uuid", "summary", "collection_name", "relevant"],
@@ -249,7 +249,7 @@ class DocumentRetrieval(Document, Retrieval):
         Retrieval.__init__(
             self,
             objects,
-            type="document",
+            payload_type="document",
             metadata=metadata,
             mapping=mapping,
             unmapped_keys=[
@@ -415,7 +415,7 @@ class Aggregation(Retrieval):
         Retrieval.__init__(
             self,
             objects=objects,
-            type="aggregation",
+            payload_type="aggregation",
             metadata=metadata,
             name=name,
         )

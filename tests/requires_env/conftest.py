@@ -71,7 +71,7 @@ def cleanup_configs(request):
     client_manager.client.close()
 
 
-@pytest.fixture(scope="function", autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def cleanup_collections(request):
     yield
 
@@ -91,7 +91,7 @@ def cleanup_collections(request):
     client_manager.client.close()
 
 
-@pytest.fixture(scope="function", autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def cleanup_feedbacks(request):
     yield
 

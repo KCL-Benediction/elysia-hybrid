@@ -11,7 +11,8 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ToolCall
 
 from elysia import Tree, Settings
 from elysia.util.client import ClientManager
-from elysia import configure
+from elysia import configure, preprocess
+from elysia.preprocessing.collection import preprocessed_collection_exists
 
 configure(logging_level="DEBUG")
 
@@ -89,54 +90,76 @@ async def test_query_with_chunking():
     Test that the correct tools are called for a prompt that requires both aggregation and query.
     """
 
-    # if the collection is not found, skip the test
-    client_manager = ClientManager()
-    if not client_manager.client.collections.exists(
-        "Weaviate_documentation"
-    ) or not client_manager.client.collections.exists("Weaviate_blogs"):
-        pytest.skip("Collections not found in Weaviate")
+    try:
+        # if the collection is not found, skip the test
+        client_manager = ClientManager()
+        if not client_manager.client.collections.exists(
+            "Weaviate_documentation"
+        ) or not client_manager.client.collections.exists("Weaviate_blogs"):
+            pytest.skip("Collections not found in Weaviate")
 
-    user_prompt = "What is HNSW?"
-    tree = await run_tree(user_prompt, ["Weaviate_documentation", "Weaviate_blogs"])
+        if not preprocessed_collection_exists("Weaviate_documentation", client_manager):
+            preprocess(
+                "Weaviate_documentation",
+                client_manager,
+            )
+        if not preprocessed_collection_exists("Weaviate_blogs", client_manager):
+            preprocess(
+                "Weaviate_blogs",
+                client_manager,
+            )
 
-    all_decision_history = []
-    for iteration in tree.decision_history:
-        all_decision_history.extend(iteration)
+        user_prompt = "How does Weaviate use HNSW?"
+        tree = await run_tree(user_prompt, ["Weaviate_documentation", "Weaviate_blogs"])
 
-    assert "query" in all_decision_history
-    env_key = (
-        "summarise_items"
-        if "summarise_items" in tree.tree_data.environment.environment
-        else "query"
-    )
-    assert env_key in tree.tree_data.environment.environment
+        all_decision_history = []
+        for iteration in tree.decision_history:
+            all_decision_history.extend(iteration)
 
-    collections_queried = list(tree.tree_data.environment.environment[env_key].keys())
+        assert "query" in all_decision_history
+        env_key = (
+            "summarise_items"
+            if "summarise_items" in tree.tree_data.environment.environment
+            else "query"
+        )
+        assert env_key in tree.tree_data.environment.environment
 
-    for collection in collections_queried:
-        assert collection in tree.tree_data.environment.environment[env_key]
-        assert len(tree.tree_data.environment.environment[env_key][collection]) > 0
-        for item in tree.tree_data.environment.environment[env_key][collection][0][
-            "objects"
-        ]:
-            assert "chunk_spans" in item and item["chunk_spans"] is not []
+        collections_queried = list(
+            tree.tree_data.environment.environment[env_key].keys()
+        )
 
-    # -- DeepEval tests --
-    deepeval_metric = metrics.TaskCompletionMetric(
-        threshold=0.5, model="gpt-4o-mini", include_reason=True
-    )
+        for collection in collections_queried:
+            assert collection in tree.tree_data.environment.environment[env_key]
+            assert len(tree.tree_data.environment.environment[env_key][collection]) > 0
+            for item in tree.tree_data.environment.environment[env_key][collection][0][
+                "objects"
+            ]:
+                assert "chunk_spans" in item and item["chunk_spans"] is not []
 
-    tools_called = get_tools_called(tree, user_prompt)
+        # -- DeepEval tests --
+        deepeval_metric = metrics.TaskCompletionMetric(
+            threshold=0.5, model="gpt-4o-mini", include_reason=True
+        )
 
-    test_case = LLMTestCase(
-        input=user_prompt,
-        actual_output=tree.tree_data.conversation_history[-1]["content"],
-        tools_called=tools_called,
-    )
+        tools_called = get_tools_called(tree, user_prompt)
 
-    res = evaluate(test_cases=[test_case], metrics=[deepeval_metric])
-    for test_case in res.test_results:
-        assert test_case.success, test_case.metrics_data[0].reason
+        test_case = LLMTestCase(
+            input=user_prompt,
+            actual_output=tree.tree_data.conversation_history[-1]["content"],
+            tools_called=tools_called,
+        )
+
+        res = evaluate(test_cases=[test_case], metrics=[deepeval_metric])
+        for test_case in res.test_results:
+            assert test_case.success, test_case.metrics_data[0].reason
+    finally:
+        # remove the chunked collection so future tests will always chunk
+        client_manager = ClientManager()
+        with client_manager.connect_to_client() as client:
+            if client.collections.exists("ELYSIA_CHUNKED_weaviate_documentation__"):
+                client.collections.delete("ELYSIA_CHUNKED_weaviate_documentation__")
+            if client.collections.exists("ELYSIA_CHUNKED_weaviate_blogs__"):
+                client.collections.delete("ELYSIA_CHUNKED_weaviate_blogs__")
 
 
 @pytest.mark.asyncio

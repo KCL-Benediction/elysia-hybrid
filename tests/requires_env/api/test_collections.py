@@ -24,7 +24,7 @@ from elysia.api.routes.collections import (
 )
 from elysia.api.routes.init import initialise_user, initialise_tree
 from elysia.api.core.log import logger, set_log_level
-from elysia.preprocess.collection import preprocess_async
+from elysia.preprocessing.collection import preprocess_async
 from elysia.util.client import ClientManager
 
 set_log_level("CRITICAL")

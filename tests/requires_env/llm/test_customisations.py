@@ -27,6 +27,7 @@ def test_tree_no_client():
         criteria="""
         The response should inform the user that the agent is unable to connect to Weaviate,
         and to set the WCD_URL and WCD_API_KEY in the settings.
+        OR, the response should inform the user to analyse the data.
         """,
         evaluation_params=[
             LLMTestCaseParams.INPUT,
@@ -41,6 +42,7 @@ def test_tree_no_client():
         expected_output="""
         The agent is unable to connect to Weaviate,
         and to set the WCD_URL and WCD_API_KEY in the settings.
+        OR, the response should inform the user to analyse the data.
         """,
     )
 

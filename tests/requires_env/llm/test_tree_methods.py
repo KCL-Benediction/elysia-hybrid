@@ -2,17 +2,17 @@ import pytest
 import elysia
 from elysia.tree.tree import Tree
 from elysia.util.client import ClientManager
-from elysia.preprocess import preprocess
+from elysia.preprocessing import preprocess
 from weaviate.util import generate_uuid5
 import weaviate.classes as wvc
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def create_and_process_collection():
-    client_manager = ClientManager()
     collection_name = "Test_ELYSIA_Product_Data"
+    client_manager = ClientManager()
     create_regular_vectorizer_collection(client_manager, collection_name)
-    preprocess([collection_name], client_manager)
+    preprocess(collection_name, client_manager)
     yield
     with client_manager.connect_to_client() as client:
         if client.collections.exists(collection_name):

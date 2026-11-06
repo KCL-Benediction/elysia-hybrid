@@ -21,6 +21,16 @@ tree = Tree()
 tree.add_tool(add)
 ```
 
+Then when calling the tree, the decision agent should use the tool if it recognises it as the best tool for the task.
+
+```python
+response, objects = tree("What is 1238213 + 1238213?")
+print(response)
+```
+```
+'I will calculate the sum for you using the add tool. The sum of 1238213 + 1238213 is 2476426.'
+```
+
 And this is all you need to do to add a tool to Elysia! Some things to note:
 
 - Your tool must be an async function (must be defined via `async def` instead of `def`).

@@ -12,7 +12,7 @@ from elysia.api.routes.processor import process_collection
 from elysia.api.routes.collections import collection_metadata
 from elysia.util.client import ClientManager
 from elysia.api.core.log import logger, set_log_level
-from elysia.preprocess.collection import (
+from elysia.preprocessing.collection import (
     delete_preprocessed_collection_async,
     preprocessed_collection_exists_async,
 )

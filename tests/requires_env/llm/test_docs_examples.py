@@ -1,3 +1,6 @@
+from httpx import delete
+
+
 def test_create_tools_simple():
 
     from elysia import tool
@@ -84,3 +87,74 @@ def test_create_tools_simple():
     env = tree.tree_data.environment.environment
     result = env["perform_mathematical_operations"]["default"][0]
     assert result["objects"][0]["tool_result"] == 2379 * 234 * 213 * 3
+
+
+def test_query_weaviate():
+
+    try:
+        from rich import print
+
+        import requests, json
+
+        url = "https://raw.githubusercontent.com/weaviate/weaviate-examples/main/jeopardy_small_dataset/jeopardy_tiny.json"
+        resp = requests.get(url)
+        data = json.loads(resp.text)
+
+        from elysia.util.client import ClientManager
+        from weaviate.classes.config import Configure
+
+        client_manager = ClientManager()
+
+        with client_manager.connect_to_client() as client:
+
+            if client.collections.exists("JeopardyQuestion"):
+                client.collections.delete("JeopardyQuestion")
+
+            client.collections.create(
+                "JeopardyQuestion",
+                vector_config=Configure.Vectors.text2vec_weaviate(),
+            )
+
+            jeopardy = client.collections.get("JeopardyQuestion")
+            response = jeopardy.data.insert_many(data)
+
+            if response.has_errors:
+                print(response.errors)
+            else:
+                print("Insert complete.")
+
+        from elysia import preprocess
+
+        preprocess("JeopardyQuestion", force=True)
+
+        from elysia import view_preprocessed_collection
+
+        print(view_preprocessed_collection("JeopardyQuestion"))
+
+        from elysia import Tree
+
+        tree = Tree()
+
+        print(tree.view())
+
+        tree.tree
+
+        response, objects = tree(
+            "Find a single question about Science",
+            collection_names=["JeopardyQuestion"],
+        )
+
+        tree("What about animals?")
+
+        print(tree.conversation_history)
+
+    finally:
+        client_manager = ClientManager()
+
+        with client_manager.connect_to_client() as client:
+            if client.collections.exists("JeopardyQuestion"):
+                client.collections.delete("JeopardyQuestion")
+
+            from elysia import delete_preprocessed_collection
+
+            delete_preprocessed_collection("JeopardyQuestion", client_manager)

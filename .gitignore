@@ -147,6 +147,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# uv
+
+uv.lock
+
 # Frontend
 elysia-frontend
 elysia-frontend/

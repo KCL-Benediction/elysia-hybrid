@@ -7,5 +7,5 @@ Coming soon.
 
 
 
-<!-- Let's consider adding the example tool we created in [the tool construction overview](Customising/creating_your_own_tools.md#example-dealing-cards-randomly-from-a-deck-intermediate), which dealt a set of random cards from a possible five. The tool is called `DealCards`.
+<!-- Let's consider adding the example tool we created in [the tool construction overview](Customising/advanced_tool_construction.md#example-dealing-cards-randomly-from-a-deck-intermediate), which dealt a set of random cards from a possible five. The tool is called `DealCards`.
  -->

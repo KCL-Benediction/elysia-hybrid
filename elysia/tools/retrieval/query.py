@@ -1,6 +1,6 @@
-from typing import List
+from typing import AsyncGenerator, Union
 from logging import Logger
-
+from pydantic import BaseModel, Field
 
 from rich import print
 from rich.panel import Panel
@@ -8,45 +8,62 @@ from rich.panel import Panel
 import dspy
 
 from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
-from elysia.util.reference import create_reference
-from elysia.objects import Branch, Reasoning, Response, Status, Tool, Warning
+from elysia.objects import Response, Status, Tool, Error, Result, Return, Retrieval
 from elysia.tools.retrieval.chunk import AsyncCollectionChunker
 from elysia.tools.retrieval.objects import (
-    BoringGenericRetrieval,
     ConversationRetrieval,
     DocumentRetrieval,
-    EcommerceRetrieval,
-    EpicGenericRetrieval,
     MessageRetrieval,
-    TicketRetrieval,
 )
 from elysia.tools.retrieval.prompt_templates import (
-    ObjectSummaryPrompt,
     QueryCreatorPrompt,
+    construct_query_output_prompt,
 )
-from elysia.tools.retrieval.util import execute_weaviate_query
+from elysia.tools.retrieval.util import (
+    execute_weaviate_query,
+    QueryError,
+    QueryOutput,
+    NonVectorisedQueryOutput,
+)
 from elysia.tree.objects import TreeData
 from elysia.util.client import ClientManager
-from elysia.util.objects import TrainingUpdate, TreeUpdate
+from elysia.util.objects import TrainingUpdate, TreeUpdate, FewShotExamples
+from elysia.util.return_types import all_return_types
 
 
 class Query(Tool):
-    def __init__(self, logger: Logger | None = None, **kwargs):
+    """
+    Elysia Query Tool
+    Queries the knowledge base with Weaviate using hybrid, semantic, or keyword search, applying filters and more.
+    These are dynamically decided by an LLM, based on the user prompt and the collections available.
+
+    Additionally, this Tool can perform the following actions:
+    - Chunk collections that are too large to vectorise effectively
+    - Dynamically return the retrieved objects to the frontend according to the display type decided by the LLM
+    - Set a flag to summarise retrieved objects in the tree
+
+    """
+
+    def __init__(
+        self,
+        logger: Logger | None = None,
+        summariser_in_tree: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(
             name="query",
             description="""
-            Query the knowledge base based on searching with a specific query.
-            This views the data specifically, and returns the data that matches the query.
-            You will be given information about the collection, such as the fields and types of the data.
+            Retrieves and displays specific data entries from the collections.
             Then, query with semantic search, keyword search, or a combination of both.
             Queries can be filtered, sorted, and more.
-            All collections may be filtered by creation time, regardless of the schema.
+            Retrieving and displaying specific data entries rather than performing calculations or summaries.
+            Do not use 'query' as a preliminary filtering step when 'aggregate' can achieve the same result more efficiently (if 'aggregate' is available).
             """,
             status="Querying...",
             inputs={
                 "collection_names": {
                     "description": "the names of the collections that are most relevant to the query. If you are unsure, give all collections.",
-                    "type": "list",
+                    "type": list[str],
                     "default": [],
                 },
             },
@@ -54,18 +71,32 @@ class Query(Tool):
         )
 
         self.logger = logger
-        # print("LOGGER LEVEL: ", self.logger.level)
+        self.summariser_in_tree = summariser_in_tree
         self.retrieval_map = {
             "conversation": ConversationRetrieval,
             "message": MessageRetrieval,
-            "ticket": TicketRetrieval,
-            "ecommerce": EcommerceRetrieval,
-            "epic_generic": EpicGenericRetrieval,
-            "boring_generic": BoringGenericRetrieval,
             "document": DocumentRetrieval,
         }
 
-    def _find_previous_queries(self, environment: dict, collection_names: list[str]):
+    async def is_tool_available(
+        self,
+        tree_data: TreeData,
+        base_lm: dspy.LM,
+        complex_lm: dspy.LM,
+        client_manager: ClientManager,
+    ) -> bool:
+        """
+        Only available if:
+        1. There is a Weaviate connection
+        2. There are collections available
+        If this tool is not available, inform the user that they should make sure they have set the WCD_URL and WCD_API_KEY in the settings.
+        And also they should make sure they have added collections to the tree.
+        """
+        return client_manager.is_client and tree_data.collection_names != []
+
+    def _find_previous_queries(
+        self, environment: dict, collection_names: list[str]
+    ) -> dict:
         previous_queries = {}
         # create a dict of collection_name: previous_queries
         for collection_name in collection_names:
@@ -84,93 +115,49 @@ class Query(Tool):
 
         return previous_queries
 
-    def _evaluate_content_field(self, display_type: str, mappings: dict) -> str:
+    def _evaluate_content_field(
+        self, metadata_fields: list[dict]
+    ) -> tuple[str | None, float | None]:
         """
-        Return the original object field if its mapped to 'content', otherwise return an empty string.
-        If no content field mapping exists in `mappings`, it will return an empty string anyway (by default).
+        Find the largest text field in the metadata.
+        Returns the field name with the highest mean value among text fields.
         """
+        # Filter for text fields only
+        text_fields = {
+            field["name"]: field
+            for field in metadata_fields
+            if (field.get("type") == "text" and field.get("mean") is not None)
+        }
 
-        if display_type == "conversation":
-            return mappings[display_type]["content"]
-        elif display_type == "message":
-            return mappings[display_type]["content"]
-        elif display_type == "ticket":
-            return mappings[display_type]["content"]
-        elif display_type == "ecommerce":
-            return mappings[display_type]["description"]
-        elif display_type == "epic_generic":
-            return mappings[display_type]["content"]
-        elif display_type == "document":
-            return mappings[display_type]["content"]
-        else:
-            return ""
+        if not text_fields:
+            return None, None
+
+        # Find the text field with the largest mean value
+        max_field = max(text_fields, key=lambda x: text_fields[x].get("mean", 0))
+        return max_field, text_fields[max_field]["mean"]
 
     def _evaluate_needs_chunking(
         self,
         display_type: str,
         query_type: str,
         schema: dict,
-        threshold: int = 1000,  # number of characters to be considered large enough to chunk
+        threshold: int = 400,  # number of tokens to be considered large enough to chunk
     ) -> bool:
-        mapping = schema["mappings"]
-        content_field = self._evaluate_content_field(display_type, mapping)
+        content_field, content_len = self._evaluate_content_field(
+            schema["fields"],
+        )
 
         return (
-            content_field != ""
-            and schema["fields"][content_field]["mean"] > threshold
+            content_field is not None
+            and content_len > threshold
             and query_type != "filter_only"
             and display_type
             == "document"  # for the moment, the only type we chunk is document
         )
 
-    async def _handle_generic_error(
-        self,
-        e: Exception,
-        collection_name: str,
-        user_prompt: str,
-    ):
-        metadata = {
-            "collection_name": collection_name,
-            "error_message": str(e),
-            "impossible": user_prompt,
-        }
-
-        if self.logger:
-            self.logger.warning(
-                f"Oops! Something went wrong during the LLM query. Continuing..."
-            )
-            self.logger.debug(f"The error was: {str(e)}")
-
-        yield BoringGenericRetrieval([], metadata)
-        yield Warning(f"Oops! Something went wrong during the LLM query. Continuing...")
-
-    async def _handle_query_error(
-        self,
-        e: Exception,
-        collection_name: str,
-        user_prompt: str,
-        query_output: dict | List[dict] | None = None,
-    ):
-        metadata = {
-            "collection_name": collection_name,
-            "assertion_error_message": str(e),
-            "impossible": user_prompt,
-        }
-        if query_output is not None:
-            metadata["query_output"] = query_output
-
-        if self.logger:
-            self.logger.warning(
-                f"Oops! Something went wrong when executing the query. Continuing..."
-            )
-            self.logger.debug(f"The error was: {str(e)}")
-
-        yield BoringGenericRetrieval([], metadata)
-        yield Warning(
-            f"Oops! Something went wrong when executing the query. Continuing..."
-        )
-
-    def _fix_collection_names(self, collection_names: list[str], schemas: dict):
+    def _fix_collection_names(
+        self, collection_names: list[str], schemas: dict
+    ) -> list[str]:
         return [
             correct_collection_name
             for correct_collection_name in list(schemas.keys())
@@ -185,15 +172,32 @@ class Query(Tool):
         truth_map = {k.lower(): k for k in true_collection_names}
         return {truth_map.get(k.lower(), k): v for k, v in collection_dict.items()}
 
+    def _parse_weaviate_error(self, error_message: str) -> str:
+        if "no api key found" in error_message.lower():
+            api_error_message = error_message[
+                (
+                    error_message.find("environment variable under ")
+                    + len("environment variable under ")
+                ) :
+            ]
+            api_error_message = api_error_message[: api_error_message.find('"\n')]
+            return (
+                f"The following API key is needed: {api_error_message} for this collection. "
+                "The user must set the API key in the settings. "
+                "Alternatively, you can try keyword (BM25) search instead."
+            )
+
+        return error_message
+
     async def __call__(
         self,
         tree_data: TreeData,
         inputs: dict,
         base_lm: dspy.LM,
         complex_lm: dspy.LM,
-        client_manager: ClientManager | None = None,
+        client_manager: ClientManager,
         **kwargs,
-    ):
+    ) -> AsyncGenerator[Return | TreeUpdate | Error | TrainingUpdate, None]:
         """
         Can perform three main functions:
         1. Query the knowledge base with Weaviate using hybrid, semantic, or keyword search, applying filters and more.
@@ -202,26 +206,6 @@ class Query(Tool):
         Chunking creates a parallel quantized collection of chunks with cross references to the original collection.
         When filtering on the parallel chunked collection, filters are applied to the original collection by cross referencing.
         """
-
-        # Create branches
-        Branch(
-            {
-                "name": "Query Executor",
-                "description": "Write and execute a query via an LLM.",
-            }
-        )
-        Branch(
-            {
-                "name": "Chunker",
-                "description": "Chunk collections that are too large to vectorise effectively.",
-            }
-        )
-        Branch(
-            {
-                "name": "Object Summariser",
-                "description": "Summarise retrieved objects.",
-            }
-        )
 
         if self.logger:
             self.logger.debug("Query Tool called!")
@@ -247,8 +231,39 @@ class Query(Tool):
             self.logger.debug(f"Collection names received: {collection_names}")
 
         # Set up the dspy model
+        query_creator_prompt = QueryCreatorPrompt
+
+        # check if collections are vectorised
+        vectorised = any(
+            (
+                schemas[collection_name]["vectorizer"] is not None
+                or (
+                    schemas[collection_name]["named_vectors"] is not None
+                    and schemas[collection_name]["named_vectors"] != []
+                )
+            )
+            for collection_name in collection_names
+        )
+
+        if vectorised:
+            query_creator_prompt = query_creator_prompt.append(
+                name="query_outputs",
+                type_=Union[list[QueryOutput], None],
+                field=dspy.OutputField(
+                    desc=construct_query_output_prompt(True),
+                ),
+            )
+        else:
+            query_creator_prompt = query_creator_prompt.append(
+                name="query_outputs",
+                type_=Union[list[NonVectorisedQueryOutput], None],
+                field=dspy.OutputField(
+                    desc=construct_query_output_prompt(False),
+                ),
+            )
+
         query_generator = ElysiaChainOfThought(
-            QueryCreatorPrompt,
+            query_creator_prompt,
             tree_data=tree_data,
             environment=True,
             collection_schemas=True,
@@ -273,97 +288,99 @@ class Query(Tool):
             for collection_name in collection_names
         }  # subset to just our collection names
 
+        # get display type descriptions
+        display_type_descriptions = {
+            display_type: all_return_types[display_type]
+            for collection_name in collection_names
+            for display_type in display_types[collection_name]
+        }
+
         # get searchable fields
         searchable_fields = {
             collection_name: [
-                named_vector
+                named_vector["name"]
                 for named_vector in schemas[collection_name]["named_vectors"]
-                if schemas[collection_name]["named_vectors"][named_vector]["enabled"]
+                if named_vector["enabled"]
             ]
             for collection_name in collection_names
+            if schemas[collection_name]["named_vectors"] is not None
         }
 
         # Generate query with LLM
         try:
-            query = await query_generator.aforward(
-                available_collections=collection_names,
-                previous_queries=previous_queries,
-                collection_display_types=display_types,
-                searchable_fields=searchable_fields,
-                lm=complex_lm,
-            )
+            if tree_data.settings.USE_FEEDBACK:
+                query, example_uuids = (
+                    await query_generator.aforward_with_feedback_examples(
+                        feedback_model="query",
+                        client_manager=client_manager,
+                        base_lm=base_lm,
+                        complex_lm=complex_lm,
+                        available_collections=collection_names,
+                        previous_queries=previous_queries,
+                        collection_display_types=display_types,
+                        display_type_descriptions=display_type_descriptions,
+                        searchable_fields=searchable_fields,
+                        num_base_lm_examples=6,
+                        return_example_uuids=True,
+                    )
+                )
+            else:
+                query = await query_generator.aforward(
+                    lm=complex_lm,
+                    available_collections=collection_names,
+                    previous_queries=previous_queries,
+                    collection_display_types=display_types,
+                    display_type_descriptions=display_type_descriptions,
+                    searchable_fields=searchable_fields,
+                )
 
         except Exception as e:
-            for collection_name in collection_names:
-                async for yield_object in self._handle_generic_error(
-                    e, collection_name, tree_data.user_prompt
-                ):
-                    yield yield_object
-                return
+            yield Error(error_message=str(e))
+            return
 
-        if self.logger and query.query_output is not None:
-            self.logger.debug(f"Query: {query.query_output.query_outputs}")
+        if self.logger and query.query_outputs is not None:
+            self.logger.debug(f"Query: {query.query_outputs}")
+            self.logger.debug(f"Fields to search: {query.fields_to_search}")
+            self.logger.debug(f"Data display: {query.data_display}")
 
         # Yield results to front end
         yield Response(text=query.message_update)
-        yield Reasoning(reasoning=query.reasoning)
-        yield TrainingUpdate(
-            model="query",
-            inputs=tree_data.to_json(),
-            outputs=query.__dict__["_store"],
-        )
-
-        yield TreeUpdate(
-            from_node="query",
-            to_node="query_executor",
-            reasoning=query.reasoning,
-            last_in_branch=(
-                query.impossible
-                or query.query_output is None
-                or not any(
-                    self._evaluate_needs_chunking(
-                        query.data_display[collection_name].display_type,
-                        current_query_output.search_type,
-                        schemas[collection_name],
-                    )
-                    for current_query_output in query.query_output.query_outputs
-                    for collection_name in current_query_output.target_collections
-                )
-            ),
-        )
+        if tree_data.settings.USE_FEEDBACK:
+            yield FewShotExamples(uuids=example_uuids)
 
         # Return if model deems query impossible
-        if query.impossible or query.query_output is None:
+        if (
+            query.impossible
+            or query.query_outputs is None
+            or all(q is None for q in query.query_outputs)
+            or len(query.query_outputs) == 0
+        ):
 
             for collection_name in collection_names:
                 metadata = {
                     "collection_name": collection_name,
                     "impossible": tree_data.user_prompt,
-                    "impossible_reasoning": query.reasoning,
+                    "impossible_reasoning": (
+                        query.reasoning
+                        if tree_data.settings.COMPLEX_USE_REASONING
+                        else ""
+                    ),
                     "query_output": (
-                        query.query_output.query_outputs.model_dump()
-                        if query.query_output is not None
+                        query.query_outputs.model_dump()
+                        if query.query_outputs is not None
                         else None
                     ),
                 }
-                yield BoringGenericRetrieval([], metadata)
+                yield Retrieval([], metadata)
 
             if self.logger:
                 self.logger.warning(
                     f"Model judged query to be impossible. Returning to the decision tree..."
                 )
-
-            yield TreeUpdate(
-                from_node="query",
-                to_node="query_executor",
-                reasoning=query.reasoning,
-                last_in_branch=True,
-            )
             return
 
         # extract and error handle the query output
-        # TODO: replace with assertions when they're released
-        for current_query_output in query.query_output.query_outputs:
+        for current_query_output in query.query_outputs:
 
             current_query_output.target_collections = self._fix_collection_names(
                 current_query_output.target_collections, schemas
@@ -371,15 +388,13 @@ class Query(Tool):
 
             for collection_name in current_query_output.target_collections:
                 if collection_name not in collection_names:
-                    async for yield_object in self._handle_generic_error(
-                        ValueError(
-                            f"Collection {collection_name} not found in target_collections field. "
+                    yield Error(
+                        feedback=(
+                            f"Collection {collection_name} in target_collections field of the query output, "
+                            "but not found in the available collections. "
                             "Make sure you are using the correct collection names."
                         ),
-                        collection_name,
-                        tree_data.user_prompt,
-                    ):
-                        yield yield_object
+                    )
                     return
 
         query.data_display = self._fix_collection_names_in_dict(
@@ -392,48 +407,41 @@ class Query(Tool):
         for collection_name in query.data_display:
 
             if collection_name not in collection_names:
-                async for yield_object in self._handle_generic_error(
-                    ValueError(
-                        f"Collection {collection_name} not found in target_collections field. "
+                yield Error(
+                    feedback=(
+                        f"Collection {collection_name} in data_display keys, "
+                        "but not found in the available collections. "
                         "Make sure you are using the correct collection names."
                     ),
-                    collection_name,
-                    tree_data.user_prompt,
-                ):
-                    yield yield_object
+                )
                 return
 
         for collection_name in query.fields_to_search:
             if collection_name not in collection_names:
-                async for yield_object in self._handle_generic_error(
-                    ValueError(
-                        f"Collection {collection_name} not found in target_collections field. "
+                yield Error(
+                    feedback=(
+                        f"Collection {collection_name} in fields_to_search keys, "
+                        "but not found in the available collections. "
                         "Make sure you are using the correct collection names."
                     ),
-                    collection_name,
-                    tree_data.user_prompt,
-                ):
-                    yield yield_object
+                )
                 return
 
-        chunking_status_sent = False
-        summarise_status_sent = False
+        # if the fields_to_search is non-empty but there are no named vectors, ignore this and reset it
+        for collection_name in query.fields_to_search:
+            if query.fields_to_search[collection_name] is not None and (
+                schemas[collection_name]["named_vectors"] is None
+                or searchable_fields[collection_name] == []
+            ):
+                query.fields_to_search[collection_name] = None
 
         # Go through outputs for each unique query
-        for i, query_output in enumerate(query.query_output.query_outputs):
+        for i, query_output in enumerate(query.query_outputs):
             collection_names = query_output.target_collections.copy()
 
             for collection_name in collection_names:
 
                 display_type = query.data_display[collection_name].display_type
-
-                if self.logger:
-                    self.logger.debug(
-                        f"Display type for collection {collection_name}: {display_type}"
-                    )
-                    self.logger.debug(
-                        f"Fields to search for collection {collection_name}: {query.fields_to_search[collection_name]}"
-                    )
 
                 # Evaluate if this collection/query needs chunking
                 needs_chunking = self._evaluate_needs_chunking(
@@ -441,24 +449,11 @@ class Query(Tool):
                     query_output.search_type,
                     schemas[collection_name],
                 )
-                content_field = self._evaluate_content_field(
-                    display_type, schemas[collection_name]["mappings"]
+                content_field, _ = self._evaluate_content_field(
+                    schemas[collection_name]["fields"],
                 )  # used for chunking
 
-                if needs_chunking:
-
-                    if not chunking_status_sent:
-                        yield Status("Chunking collections...")
-                        yield TreeUpdate(
-                            from_node="query_executor",
-                            to_node="chunker",
-                            reasoning="Chunking collections because they are too large to vectorise effectively.",
-                            last_in_branch=not any(
-                                query.data_display[collection_name_0].summarise_items
-                                for collection_name_0 in query.data_display
-                            ),
-                        )
-                        chunking_status_sent = True
+                if needs_chunking and content_field is not None:
 
                     if self.logger:
                         self.logger.debug(f"Chunking {collection_name}")
@@ -480,12 +475,24 @@ class Query(Tool):
 
                     # run this augmented query for the unchunked collection
                     async with client_manager.connect_to_async_client() as client:
-                        unchunked_response, _ = await execute_weaviate_query(
-                            client,
-                            query_output_copy,
-                            reference_property="isChunked",
-                            named_vector_fields=query.fields_to_search,
-                        )
+                        try:
+                            unchunked_response, _ = await execute_weaviate_query(
+                                client,
+                                query_output_copy,
+                                reference_property="isChunked",
+                                named_vector_fields=query.fields_to_search,
+                                property_types={
+                                    collection_name: {field["name"]: field["type"]}
+                                    for field in schemas[collection_name]["fields"]
+                                },
+                                schema=schemas,
+                            )
+                        except QueryError as e:
+                            yield Error(feedback=str(e))
+                            continue
+                        except Exception as e:
+                            yield Error(error_message=str(e))
+                            continue
 
                     # chunk the unchunked response
                     yield Status(
@@ -517,17 +524,22 @@ class Query(Tool):
                         client,
                         query_output,
                         named_vector_fields=query.fields_to_search,
+                        property_types={
+                            collection_name: {
+                                field["name"]: field["type"]
+                                for field in schemas[collection_name]["fields"]
+                            }
+                            for collection_name in collection_names
+                        },
+                        schema=schemas,
                     )
+                except QueryError as e:
+                    yield Error(feedback=str(e))
+                    continue
                 except Exception as e:
                     for collection_name in collection_names:
-                        async for yield_object in self._handle_query_error(
-                            e,
-                            collection_name,
-                            tree_data.user_prompt,
-                            query_output.model_dump(),
-                        ):
-                            yield yield_object
-                    continue  # don't exit, try again for next query_output (might not error)
+                        yield Error(error_message=str(e))
+                    continue
 
                 yield Status(
                     f"Retrieved {sum(len(x.objects) for x in responses)} objects from {len(collection_names)} collections..."
@@ -550,6 +562,10 @@ class Query(Tool):
                 display_type = query.data_display[collection_name].display_type
                 summarise_items = query.data_display[collection_name].summarise_items
 
+                # get query output formatted
+                query_output_formatted = query_output.model_dump()
+                query_output_formatted["target_collections"] = collection_names
+
                 # Get the objects from the response
                 objects = []
                 for obj in response.objects:
@@ -560,7 +576,7 @@ class Query(Tool):
                 metadata = {
                     "collection_name": collection_name,
                     "display_type": display_type,
-                    "summarise_items": summarise_items,
+                    "needs_summarising": summarise_items,
                     "query_text": query_output.search_query,
                     "query_type": query_output.search_type,
                     "chunked": self._evaluate_needs_chunking(
@@ -568,7 +584,7 @@ class Query(Tool):
                         query_output.search_type,
                         schemas[collection_name],
                     ),
-                    "query_output": query_output.model_dump(),
+                    "query_output": query_output_formatted,
                     "code": {
                         "language": "python",
                         "title": "Query",
@@ -577,104 +593,60 @@ class Query(Tool):
                 }
 
                 # Create the retrieval object
-                output = self.retrieval_map[display_type](
-                    objects,
-                    metadata,
-                    mapping=schemas[collection_name]["mappings"][display_type],
-                )
+                if display_type in self.retrieval_map:
+                    output = self.retrieval_map[display_type](
+                        objects,
+                        metadata,
+                        mapping=(
+                            schemas[collection_name]["mappings"][display_type]
+                            if display_type != "table"
+                            else None
+                        ),
+                    )
+                else:
+                    output = Retrieval(
+                        objects,
+                        metadata,
+                        payload_type=display_type,
+                        name=collection_name,
+                        mapping=(
+                            schemas[collection_name]["mappings"][display_type]
+                            if display_type != "table"
+                            else None
+                        ),
+                    )
 
                 # If the display type is document or conversation, initialise the object (requires some async operations)
-                if display_type == "document" or display_type == "conversation":
+                if isinstance(output, DocumentRetrieval) or isinstance(
+                    output, ConversationRetrieval
+                ):
                     await output.async_init(client_manager)
 
-                if summarise_items:
-                    if self.logger:
-                        self.logger.debug(
-                            f"{collection_name} will have itemised summaries."
-                        )
-
-                    object_summariser = dspy.ChainOfThought(ObjectSummaryPrompt)
-                    object_summariser = dspy.asyncify(object_summariser)
-                    yield Status(
-                        f"Summarising {len(objects)} objects from {collection_name}..."
-                    )
-
-                    summariser = await object_summariser(
-                        objects=output.to_json(), lm=base_lm
-                    )
-
-                    if self.logger:
-                        self.logger.debug(f"Summarisation complete.")
-
-                    if not summarise_status_sent:
-                        yield TreeUpdate(
-                            from_node="query_executor",
-                            to_node="object_summariser",
-                            reasoning=summariser.reasoning,
-                            last_in_branch=True,
-                        )
-                        summarise_status_sent = True
-
-                    output.add_summaries(summariser.summaries)
+                if summarise_items and self.summariser_in_tree:
+                    if (
+                        "items_to_summarise"
+                        not in tree_data.environment.hidden_environment
+                    ):
+                        tree_data.environment.hidden_environment[
+                            "items_to_summarise"
+                        ] = []
+                    tree_data.environment.hidden_environment[
+                        "items_to_summarise"
+                    ].append(output)
                 else:
-                    output.add_summaries([])
+                    yield output
 
-                # Yield the output object
-                yield output
-
-        if not chunking_status_sent:
-            yield TreeUpdate(
-                from_node="query_executor",
-                to_node="chunker",
-                reasoning="This step was skipped because no chunking was needed for the collections queried.",
-                last_in_branch=True,
-            )
-
-        if not summarise_status_sent:
-            yield TreeUpdate(
-                from_node="query_executor",
-                to_node="object_summariser",
-                reasoning="This step was skipped because the LLM determined that no output types were summaries.",
-                last_in_branch=True,
-            )
-
+        # if successful, yield training update
+        yield TrainingUpdate(
+            module_name="query",
+            inputs={
+                "available_collections": collection_names,
+                "previous_queries": previous_queries,
+                "collection_display_types": display_types,
+                "searchable_fields": searchable_fields,
+                **tree_data.to_json(),
+            },
+            outputs=query.__dict__["_store"],
+        )
         if self.logger:
             self.logger.debug("Query Tool finished!")
-
-
-# async def main():
-#     from elysia.objects import Result, Text, Update
-#     from elysia.tree.tree import Tree
-#     from elysia.util.client import ClientManager
-
-#     # init tree
-#     client_manager = ClientManager()
-#     await client_manager.start_clients()
-#     tree = Tree(
-#         collection_names=["ecommerce", "weather", "weaviate_documentation"], debug=True
-#     )
-#     await tree.async_init(client_manager)
-
-#     tree.tree_data.user_prompt = (
-#         "what is HNSW? search only where the categories field is 'Documentation'"
-#     )
-#     query = Query(verbosity=2)
-#     async for result in query(
-#         base_lm=tree.base_lm,
-#         complex_lm=tree.complex_lm,
-#         inputs={"collection_names": ["ecommerce", "weather", "weaviate_documentation"]},
-#         tree_data=tree.tree_data,
-#         client_manager=client_manager,
-#     ):
-#         if isinstance(result, Result):
-#             print(await result.to_frontend("1", "2", "3"))
-#         elif isinstance(result, Update):
-#             print(await result.to_frontend("2", "3"))
-#         elif isinstance(result, Text):
-#             print(result.text)
-
-
-# if __name__ == "__main__":
-#     import asyncio
-
-#     asyncio.run(main())

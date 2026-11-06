@@ -1,15 +1,16 @@
 import asyncio
 import datetime
+import os
 import threading
 
 from contextlib import asynccontextmanager, contextmanager
+from typing import AsyncGenerator, Generator, Any
 from logging import Logger
 
 import weaviate
 from weaviate.classes.init import Auth
-
-from elysia.config import Settings
-from elysia.config import settings as environment_settings
+from weaviate.client import WeaviateClient, WeaviateAsyncClient
+from elysia.config import settings as environment_settings, Settings
 
 api_key_map = {
     # Regular API keys
@@ -51,11 +52,6 @@ api_key_map = {
 }
 
 
-# TODO: make client manager have some error messages when WCD_URL etc is not set.
-# e.g. client_manager = ClientManager() is fine, but if no env vars, it will give a warning.
-#      but the warning will say "this is fine if you are not going to use weaviate for retrieval"
-#      however, if a tool is called that tries to retrieve, it should raise an error within the client manager.
-#      i.e. client_manager is never None, so when doing things like this, it should raise an error/warning
 class ClientManager:
     """
     Handles the creation and management of the Weaviate client.
@@ -66,18 +62,21 @@ class ClientManager:
 
     def __init__(
         self,
-        wcd_url: str = "",
-        wcd_api_key: str = "",
-        client_timeout: int | None = None,
+        wcd_url: str | None = None,
+        wcd_api_key: str | None = None,
+        client_timeout: datetime.timedelta | int | None = None,
         logger: Logger | None = None,
+        settings: Settings | None = None,
         **kwargs,
-    ):
+    ) -> None:
         """
         Args:
-            wcd_url: the url of the Weaviate cluster. Defaults to global settings config.
-            wcd_api_key: the api key for the Weaviate cluster. Defaults to global settings config.
-            client_timeout: how long (in minutes) means the client should be restarted. Defaults to 3 minutes.
-            **kwargs: any other api keys for third party services (formatted as e.g. OPENAI_APIKEY).
+            wcd_url (str): the url of the Weaviate cluster. Defaults to global settings config.
+            wcd_api_key (str): the api key for the Weaviate cluster. Defaults to global settings config.
+            client_timeout (datetime.timedelta | int | None): how long (in minutes) means the client should be restarted. Defaults to 3 minutes.
+            logger (Logger | None): a logger object for logging messages. Defaults to None.
+            settings (Settings | None): a settings object for the client manager. Defaults to environment settings.
+            **kwargs (Any): any other api keys for third party services (formatted as e.g. OPENAI_APIKEY).
 
         Example:
         ```python
@@ -93,28 +92,37 @@ class ClientManager:
         self.logger = logger
 
         if client_timeout is None:
-            self.client_timeout = environment_settings.CLIENT_TIMEOUT
+            self.client_timeout = datetime.timedelta(
+                minutes=int(os.getenv("CLIENT_TIMEOUT", 3))
+            )
+        elif isinstance(client_timeout, int):
+            self.client_timeout = datetime.timedelta(minutes=client_timeout)
         else:
             self.client_timeout = client_timeout
 
+        if settings is None:
+            self.settings = environment_settings
+        else:
+            self.settings = settings
+
         # Set the weaviate cluster url and api key
-        if wcd_url == "":
-            self.wcd_url = environment_settings.WCD_URL
+        if wcd_url is None:
+            self.wcd_url = self.settings.WCD_URL
         else:
             self.wcd_url = wcd_url
 
-        if wcd_api_key == "":
-            self.wcd_api_key = environment_settings.WCD_API_KEY
+        if wcd_api_key is None:
+            self.wcd_api_key = self.settings.WCD_API_KEY
         else:
             self.wcd_api_key = wcd_api_key
 
         # Set the api keys for non weaviate cluster (third parties)
         self.headers = {}
-        for api_key in environment_settings.API_KEYS:
+        for api_key in self.settings.API_KEYS:
             if api_key.lower() in [a.lower() for a in api_key_map.keys()]:
-                self.headers[api_key_map[api_key.upper()]] = (
-                    environment_settings.API_KEYS[api_key]
-                )
+                self.headers[api_key_map[api_key.upper()]] = self.settings.API_KEYS[
+                    api_key
+                ]
 
         # From kwargs
         for kwarg in kwargs:
@@ -134,46 +142,103 @@ class ClientManager:
         self.last_used_sync_client = datetime.datetime.now()
         self.last_used_async_client = datetime.datetime.now()
 
+        self.async_client = None
+        self.async_init_completed = False
+        self.is_client = self.wcd_url != "" and self.wcd_api_key != ""
+
+        if self.logger:
+            if self.wcd_api_key == "" and self.wcd_url == "":
+                self.logger.warning(
+                    "WCD_URL and WCD_API_KEY are not set. "
+                    "All Weaviate functionality will be disabled."
+                )
+            elif self.wcd_url == "":
+                self.logger.warning(
+                    "WCD_URL is not set. "
+                    "All Weaviate functionality will be disabled."
+                )
+            elif self.wcd_api_key == "":
+                self.logger.warning(
+                    "WCD_API_KEY is not set. "
+                    "All Weaviate functionality will be disabled."
+                )
+            else:
+                self.logger.debug(
+                    "Weaviate client initialised. "
+                    "All Weaviate functionality will be enabled."
+                )
+
+        if not self.is_client:
+            return
+
         # Start sync client
         self.client = self.get_client()
         self.sync_restart_event.set()
 
-        self.async_client = None
-        self.async_init_completed = False
+    async def reset_keys(
+        self,
+        wcd_url: str | None = None,
+        wcd_api_key: str | None = None,
+        api_keys: dict[str, str] = {},
+    ) -> None:
+        """
+        Set the API keys, WCD_URL and WCD_API_KEY from the settings object.
 
-    async def set_keys_from_settings(self, settings: Settings):
-        self.wcd_url = settings.WCD_URL
-        self.wcd_api_key = settings.WCD_API_KEY
+        Args:
+            wcd_url (str): the url of the Weaviate cluster.
+            wcd_api_key (str): the api key for the Weaviate cluster.
+            api_keys (dict): a dictionary of api keys for third party services.
+        """
+        self.wcd_url = wcd_url
+        self.wcd_api_key = wcd_api_key
 
-        for api_key in settings.API_KEYS:
+        self.headers = {}
+
+        for api_key in api_keys:
             if api_key.lower() in [a.lower() for a in api_key_map.keys()]:
-                self.headers[api_key_map[api_key.upper()]] = settings.API_KEYS[api_key]
+                self.headers[api_key_map[api_key.upper()]] = api_keys[api_key]
 
-        await self.restart_client()
-        await self.restart_async_client()
+        self.is_client = self.wcd_url != "" and self.wcd_api_key != ""
+        if self.is_client:
+            await self.restart_client(force=True)
+            await self.restart_async_client(force=True)
+            await self.start_clients()
 
-    async def start_clients(self):
+    async def start_clients(self) -> None:
+        """
+        Start the async and sync clients if they are not already running.
+        """
+
+        if not self.is_client:
+            raise ValueError(
+                "Weaviate is not available. Please set the WCD_URL and WCD_API_KEY in the settings."
+            )
+
         if self.async_client is None:
             self.async_client = await self.get_async_client()
             self.async_restart_event.set()
 
         if not self.async_client.is_connected():
             await self.async_client.connect()
+
         self.async_init_completed = True
 
         if not self.client.is_connected():
             self.client.connect()
 
-    def update_last_user_request(self):
+    def update_last_user_request(self) -> None:
         self.last_user_request = datetime.datetime.now()
 
-    def update_last_used_sync_client(self):
+    def update_last_used_sync_client(self) -> None:
         self.last_used_sync_client = datetime.datetime.now()
 
-    def update_last_used_async_client(self):
+    def update_last_used_async_client(self) -> None:
         self.last_used_async_client = datetime.datetime.now()
 
-    def get_client(self):
+    def get_client(self) -> WeaviateClient:
+        if self.wcd_url is None or self.wcd_api_key is None:
+            raise ValueError("WCD_URL and WCD_API_KEY must be set")
+
         return weaviate.connect_to_weaviate_cloud(
             cluster_url=self.wcd_url,
             auth_credentials=Auth.api_key(self.wcd_api_key),
@@ -181,7 +246,10 @@ class ClientManager:
             skip_init_checks=True,
         )
 
-    async def get_async_client(self):
+    async def get_async_client(self) -> WeaviateAsyncClient:
+        if self.wcd_url is None or self.wcd_api_key is None:
+            raise ValueError("WCD_URL and WCD_API_KEY must be set")
+
         return weaviate.use_async_with_weaviate_cloud(
             cluster_url=self.wcd_url,
             auth_credentials=Auth.api_key(self.wcd_api_key),
@@ -190,7 +258,7 @@ class ClientManager:
         )
 
     @contextmanager
-    def connect_to_client(self):
+    def connect_to_client(self) -> Generator[WeaviateClient, Any, None]:
         """
         A context manager to connect to the _sync_ client.
 
@@ -214,7 +282,9 @@ class ClientManager:
             yield connection.client
 
     @asynccontextmanager
-    async def connect_to_async_client(self):
+    async def connect_to_async_client(
+        self,
+    ) -> AsyncGenerator[WeaviateAsyncClient, Any]:
         """
         A context manager to connect to the _async_ client.
 
@@ -232,6 +302,9 @@ class ClientManager:
         async with self.async_lock:
             self.async_in_use_counter += 1
 
+        if self.async_client is None:
+            raise ValueError("Async client not initialised")
+
         if not self.async_client.is_connected():
             await self.async_client.connect()
 
@@ -239,10 +312,17 @@ class ClientManager:
         async with connection:
             yield connection.client
 
-    async def restart_async_client(self):
+    async def restart_async_client(self, force=False) -> None:
+        """
+        Restart the async client if it has not been used in the last client_timeout minutes (set in init).
+        """
+        if self.client_timeout == datetime.timedelta(minutes=0) and not force:
+            return
+
         # First check if the client has been used in the last X minutes
-        if datetime.datetime.now() - self.last_used_async_client > datetime.timedelta(
-            minutes=self.client_timeout
+        if (
+            datetime.datetime.now() - self.last_used_async_client > self.client_timeout
+            or force
         ):
             # Acquire lock before modifying shared state to prevent race conditions
             try:
@@ -326,10 +406,17 @@ class ClientManager:
                 # Attempt to create a new client
                 self.async_client = await self.get_async_client()
 
-    async def restart_client(self):
+    async def restart_client(self, force=False) -> None:
+        """
+        Restart the sync client if it has not been used in the last client_timeout minutes (set in init).
+        """
+        if self.client_timeout == datetime.timedelta(minutes=0) and not force:
+            return
+
         # First check if the client has been used in the last X minutes
-        if datetime.datetime.now() - self.last_used_sync_client > datetime.timedelta(
-            minutes=self.client_timeout
+        if (
+            datetime.datetime.now() - self.last_used_sync_client > self.client_timeout
+            or force
         ):
             # Use both locks to prevent any race conditions between sync and async operations
             try:
@@ -410,7 +497,7 @@ class ClientManager:
                 # Attempt to create a new client
                 self.client = self.get_client()
 
-    async def close_clients(self):
+    async def close_clients(self) -> None:
         """
         Close both the async and sync clients.
         Should not be called inside a Tool or other function inside the decision tree.
@@ -423,28 +510,28 @@ class ClientManager:
 
 # Custom context managers so that clients do not close after use (instead on a timer)
 class _ClientConnection:
-    def __init__(self, manager, client):
+    def __init__(self, manager: ClientManager, client: WeaviateClient):
         self.manager = manager
         self.client = client
 
-    def __enter__(self):
+    def __enter__(self) -> WeaviateClient:
         return self.client
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         with self.manager.sync_lock:
             self.manager.sync_in_use_counter -= 1
         self.manager.update_last_used_sync_client()
 
 
 class _AsyncClientConnection:
-    def __init__(self, manager, client):
+    def __init__(self, manager: ClientManager, client: WeaviateAsyncClient):
         self.manager = manager
         self.client = client
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> WeaviateAsyncClient:
         return self.client
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         async with self.manager.async_lock:
             self.manager.async_in_use_counter -= 1
         self.manager.update_last_used_async_client()

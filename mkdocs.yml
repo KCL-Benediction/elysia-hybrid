@@ -28,34 +28,35 @@ theme:
 
 nav:
   - Getting Started: index.md
+  - Setting Up: setting_up.md
   - Basic Usage: basic.md
-  - Advanced Usage: advanced_usage.md
-  - Preprocessing: preprocess.md
-  - Customising Elysia:
-    - Overview: Customising/index.md
-    - Technical Overview: Customising/technical_overview.md
-    - Tool Construction: Customising/creating_your_own_tools.md
-    - Custom Objects: Customising/custom_objects.md
-    - Environment: Customising/environment.md
+  - Customising Elysia: advanced_usage.md
+  - Creating a Tool: creating_tools.md
+  - Advanced:
+    - Overview: Advanced/index.md
+    - Technical Overview: Advanced/technical_overview.md
+    - Tool Construction: Advanced/advanced_tool_construction.md
+    - Custom Objects: Advanced/custom_objects.md
+    - Environment: Advanced/environment.md
   - API: 
     - Overview: API/index.md
-    - Client Management: API/client_management.md
-    - User Management: API/user_management.md
-    - Routes: API/routes.md
+    - User Management: API/user_and_tree_managers.md
     - Payload Formats: API/payload_formats.md
  
   - Examples:
-    # - Intermediate: Examples/02_intermediate.md
-    - Sentiment Analysis: Examples/sentiment_analysis.md
-    - Fantasy Adventure: Examples/fantasy_adventure.md
+    - Index: Examples/index.md
+    - Basic Linear Regression: Examples/data_analysis.md
+
   - Reference:
     - Preprocessor: Reference/Preprocessor.md
     - Tree: Reference/Tree.md
     - WeaviateClient: Reference/Client.md
-    # - Configure: Reference/Configure.md
+    - Managers: Reference/Managers.md
+    - Settings: Reference/Settings.md
     - Objects: Reference/Objects.md
     # - Tools: Reference/Tools.md
-    - Result: Reference/Result.md
+    # - Result: Reference/Result.md
+    - Payload Types: Reference/PayloadTypes.md
     - Util: Reference/Util.md
 plugins:
   - social
@@ -93,3 +94,9 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js

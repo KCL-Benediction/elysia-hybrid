@@ -39,6 +39,8 @@ def get_logger():
         logging.getLogger("LiteLLM Router").propagate = False
         logging.getLogger("LiteLLM Proxy").setLevel(logging.WARNING)
         logging.getLogger("LiteLLM Proxy").propagate = False
+        logging.getLogger("matplotlib").setLevel(logging.WARNING)
+        logging.getLogger("matplotlib").propagate = False
 
         _logger = logging.getLogger("rich")
         _logger.setLevel(logging.DEBUG)

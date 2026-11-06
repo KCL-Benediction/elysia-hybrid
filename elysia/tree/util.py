@@ -1,39 +1,225 @@
-import ast
-from typing import Any
+import uuid
 
 # dspy requires a 'base' LM but this should not be used
 import dspy
 from pympler import asizeof
 from logging import Logger
 
-# globals
+from typing import Callable, Union
+
+from weaviate.util import generate_uuid5
+from weaviate.classes.query import MetadataQuery, Sort, Filter
+
 from elysia.objects import (
     Response,
-    Return,
+    Result,
+    Error,
+    Text,
     Tool,
     Update,
     Status,
 )
 
-# Objects
 from elysia.tree.objects import TreeData
-from elysia.util.objects import TrainingUpdate, TreeUpdate
+from elysia.util.objects import TrainingUpdate, TreeUpdate, FewShotExamples
 from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
-from elysia.util.reference import create_reference
+from elysia.util.parsing import format_datetime
+from elysia.util.client import ClientManager
 from elysia.tree.prompt_templates import (
-    construct_decision_prompt,
     FollowUpSuggestionsPrompt,
+    TitleCreatorPrompt,
+    DecisionPrompt,
 )
+from elysia.tools.text.prompt_templates import TextResponsePrompt
+from elysia.util.retrieve_feedback import retrieve_feedback
 
-# Settings
-from elysia.config import Settings, load_base_lm
+
+class ForcedTextResponse(Tool):
+    """
+    A tool that creates a new text response via a new LLM call.
+    This is used in the decision tree when the tree reaches the end of its process, but no text is being displayed to the user.
+    Then this tool is automaticaly called to create a new text response.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            name="final_text_response",
+            description="",
+            status="Writing response...",
+            inputs={},
+            end=True,
+        )
+
+    async def __call__(
+        self,
+        tree_data: TreeData,
+        inputs: dict,
+        base_lm: dspy.LM,
+        complex_lm: dspy.LM,
+        client_manager: ClientManager | None = None,
+        **kwargs,
+    ):
+        text_response = ElysiaChainOfThought(
+            TextResponsePrompt,
+            tree_data=tree_data,
+            environment=True,
+            tasks_completed=True,
+            message_update=False,
+        )
+
+        output = await text_response.aforward(
+            lm=base_lm,
+        )
+
+        yield Response(text=output.response)
 
 
-class RecursionLimitException(Exception):
-    pass
+class CopiedModule(dspy.Module):
+    """
+    A module that copies another module and adds a previous_feedbacks field to the signature.
+    This is used to store the previous errored decision attempts for the decision node.
+    This is one part of the feedback loop for the decision node, the other part is in the AssertedModule class.
+    """
+
+    def __init__(
+        self,
+        module: ElysiaChainOfThought,
+        **kwargs,
+    ):
+        self.module = module
+
+        feedback_desc = (
+            "Pairs of INCORRECT previous attempts at this action, and the feedback received for each attempt. "
+            "Judge what was incorrect in the previous attempts. "
+            "Follow the feedback to improve your next attempt."
+        )
+        feedback_prefix = "${previous_feedback}"
+        feedback_field: str = dspy.InputField(
+            prefix=feedback_prefix, desc=feedback_desc
+        )
+
+        signature = self.module.predict.signature
+        signature = signature.prepend(
+            name="previous_feedbacks",
+            field=feedback_field,
+            type_=str,
+        )
+
+        self.module.predict.signature = signature  # type: ignore
+
+    def _format_feedbacks(
+        self, previous_feedbacks: list[str], previous_attempts: list[dict]
+    ):
+        feedbacks: list[str] = [
+            f"ATTEMPT {i+1}:\n"
+            + f"PREVIOUS INPUT: {str(attempt)}\n"
+            + f"PREVIOUS FEEDBACK FOR THIS INPUT: {feedback}\n"
+            for i, (attempt, feedback) in enumerate(
+                zip(previous_attempts, previous_feedbacks)
+            )
+        ]
+        return "\n".join(feedbacks)
+
+    async def aforward(
+        self,
+        previous_feedbacks: list[str],
+        previous_attempts: list[dict],
+        **kwargs,
+    ):
+        pred = await self.module.acall(
+            previous_feedbacks=self._format_feedbacks(
+                previous_feedbacks, previous_attempts
+            ),
+            **kwargs,
+        )
+        return pred
+
+    async def aforward_with_feedback_examples(
+        self,
+        previous_feedbacks: list[str],
+        previous_attempts: list[dict],
+        **kwargs,
+    ):
+        pred, uuids = await self.module.aforward_with_feedback_examples(
+            previous_feedbacks=self._format_feedbacks(
+                previous_feedbacks, previous_attempts
+            ),
+            **kwargs,
+        )
+        return pred, uuids
+
+
+class AssertedModule(dspy.Module):
+    """
+    A module that calls another module until it passes an assertion function.
+    This function returns a tuple of (asserted, feedback).
+    If the assertion is false, the module is called again with the previous feedbacks and attempts.
+    This is used to improve the module's performance and iteratively trying to get it to pass the assertion.
+    """
+
+    def __init__(
+        self,
+        module: ElysiaChainOfThought,
+        assertion: Callable[[dict, dspy.Prediction], tuple[bool, str]],
+        max_tries: int = 3,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.assertion = assertion
+        self.module = module
+        self.max_tries = max_tries
+
+        self.previous_feedbacks = []
+        self.previous_attempts = []
+
+    def modify_signature_on_feedback(self, pred, feedback, **kwargs):
+        self.previous_feedbacks.append(feedback)
+        self.previous_attempts.append(pred.toDict())
+        return CopiedModule(self.module.deepcopy(), **kwargs)
+
+    async def aforward(self, **kwargs):
+
+        pred = await self.module.acall(**kwargs)
+        num_tries = 0
+
+        asserted, feedback = self.assertion(kwargs, pred)
+
+        while not asserted and num_tries <= self.max_tries:
+            asserted_module = self.modify_signature_on_feedback(pred, feedback)
+            pred = await asserted_module.aforward(
+                previous_feedbacks=self.previous_feedbacks,
+                previous_attempts=self.previous_attempts,
+                **kwargs,
+            )
+            asserted, feedback = self.assertion(kwargs, pred)
+            num_tries += 1
+
+        return pred
+
+    async def aforward_with_feedback_examples(self, **kwargs):
+        pred, uuids = await self.module.aforward_with_feedback_examples(**kwargs)
+        num_tries = 0
+
+        asserted, feedback = self.assertion(kwargs, pred)
+
+        while not asserted and num_tries <= self.max_tries:
+            asserted_module = self.modify_signature_on_feedback(pred, feedback)
+            pred, uuids = await asserted_module.aforward_with_feedback_examples(
+                previous_feedbacks=self.previous_feedbacks,
+                previous_attempts=self.previous_attempts,
+                **kwargs,
+            )
+            asserted, feedback = self.assertion(kwargs, pred)
+            num_tries += 1
+
+        return pred, uuids
 
 
 class Decision:
+    """
+    Simple decision object to store the decision made by the decision node.
+    """
+
     def __init__(
         self,
         function_name: str,
@@ -52,19 +238,28 @@ class Decision:
 
 
 class DecisionNode:
+    """
+    A decision node is a node in the tree that makes a decision based on the available options.
+    This class is essentially the executor of the decision node.
+    """
+
     def __init__(
         self,
         id: str,
         instruction: str,
-        options: dict[str, dict[str, str | bool | Tool | None]],
+        options: dict[
+            str, dict[str, Union[str, dict, bool, Tool, "DecisionNode", None]]
+        ],
         root: bool = False,
-        logger: Logger = None,
+        logger: Logger | None = None,
+        use_elysia_collections: bool = True,
     ):
         self.id = id
         self.instruction = instruction
         self.options = options
         self.root = root
         self.logger = logger
+        self.use_elysia_collections = use_elysia_collections
 
     def _get_options(self):
         return self.options
@@ -77,18 +272,18 @@ class DecisionNode:
         action: Tool | None = None,
         end: bool = True,
         status: str = "",
-        next: str | None = None,
+        next: "DecisionNode | None" = None,
     ):
         if status == "":
             status = f"Running {id}..."
 
         self.options[id] = {
-            "description": description,
-            "inputs": inputs,
-            "action": action,
-            "end": end,
-            "status": status,
-            "next": next,
+            "description": description,  # type: str
+            "inputs": inputs,  # type: dict
+            "action": action,  # type: Tool | None
+            "end": end,  # type: bool
+            "status": status,  # type: str
+            "next": next,  # type: DecisionNode | None
         }
 
     def remove_option(self, id: str):
@@ -108,14 +303,38 @@ class DecisionNode:
             out[node] = {
                 "function_name": node,
                 "description": self.options[node]["description"],
-                "inputs": self.options[node]["inputs"],
+            }
+
+            if self.options[node]["inputs"] != {}:
+                out[node]["inputs"] = self.options[node]["inputs"]
+
+                for input_dict in out[node]["inputs"].values():
+                    if hasattr(input_dict["type"], "model_json_schema"):
+                        type_overwrite = f"A JSON object of the following properties: {input_dict['type'].model_json_schema()['properties']}"
+                        if "$defs" in input_dict["type"].model_json_schema():
+                            type_overwrite += f"\nWhere the values are: {input_dict['type'].model_json_schema()['$defs']}"
+                        input_dict["type"] = type_overwrite
+            else:
+                out[node]["inputs"] = "No inputs are needed for this function."
+
+        return out
+
+    def _unavailable_options_to_json(self, unavailable_tools: list[tuple[str, str]]):
+        """
+        Options unavailable at this time and why.
+        """
+        out = {}
+        for tool, reason in unavailable_tools:
+            if reason == "":
+                reason = "No reason provided."
+            out[tool] = {
+                "function_name": tool,
+                "description": self.options[tool]["description"],
+                "available_at": reason,
             }
         return out
 
-    def decide_from_route(self, route: str):
-        """
-        Decide from a route.
-        """
+    def decide_from_route(self, route: list[str]):
         possible_nodes = self._get_options()
 
         next_route = route[0]
@@ -134,72 +353,170 @@ class DecisionNode:
                 impossible=False,
                 function_inputs={},
                 end_actions=completed,
+                last_in_tree=completed,
             ),
-            route,
+            "/".join(route),
+        )
+
+    async def load_model_from_examples(
+        self,
+        decision_executor: dspy.Module,
+        client_manager: ClientManager,
+        user_prompt: str,
+    ) -> dspy.Module:
+
+        examples = await retrieve_feedback(client_manager, user_prompt, "decision")
+
+        if len(examples) == 0:
+            return decision_executor
+
+        optimizer = dspy.LabeledFewShot(k=10)
+        compiled_executor = optimizer.compile(decision_executor, trainset=examples)
+        return compiled_executor
+
+    def _tool_assertion(self, kwargs, pred):
+        return (
+            pred.function_name in self.options,
+            f"You picked the action `{pred.function_name}` - that is not in `available_actions`! "
+            f"Your output MUST be one of the following: {list(self.options.keys())}",
         )
 
     async def __call__(
         self,
         tree_data: TreeData,
-        lm: dspy.LM = None,
-        available_tools: list[str] = [],
+        base_lm: dspy.LM,
+        complex_lm: dspy.LM,
+        available_tools: list[str],
+        unavailable_tools: list[tuple[str, str]],
+        successive_actions: dict,
+        client_manager: ClientManager,
         **kwargs,
-    ):
-        options = self._options_to_json(available_tools)
-        if len(options) == 0:
+    ) -> tuple[Decision, list[TrainingUpdate | Status | Response | FewShotExamples]]:
+
+        available_options = self._options_to_json(available_tools)
+        unavailable_options = self._unavailable_options_to_json(unavailable_tools)
+
+        if len(available_options) == 0:
             raise RuntimeError(
                 "No available tools to call! Make sure you have added some tools to the tree. "
                 "Or the .is_tool_available() method is returning True for at least one tool."
             )
-        for option in options:
-            if options[option]["inputs"] == {}:
-                options[option]["inputs"] = "No inputs are needed for this function."
 
-        decision_executor = ElysiaChainOfThought(
-            construct_decision_prompt(self._get_options()),
-            tree_data=tree_data,
-            environment=True,
-            collection_schemas=True,
-            tasks_completed=True,
-            message_update=True,
-        )
-        # decision_executor = self._load_model(decision_executor)
-        # decision_executor = dspy.asyncify(decision_executor)
+        if self.logger:
+            self.logger.debug(f"Available options: {list(available_options.keys())}")
 
-        self.logger.debug(f"Available options: {list(options.keys())}")
-
-        output = await decision_executor.aforward(
-            instruction=self.instruction,
-            tree_count=tree_data.tree_count_string(),
-            available_actions=options,
-            lm=lm,
+        one_choice = (
+            all(
+                option["inputs"] == "No inputs are needed for this function."
+                for option in available_options.values()
+            )
+            and len(available_options) == 1
         )
 
-        decision = Decision(
-            output.function_name,
-            output.function_inputs,
-            output.reasoning,
-            output.impossible,
-            output.end_actions and self.options[output.function_name]["end"],
-        )
+        if not one_choice:
+            decision_module = ElysiaChainOfThought(
+                DecisionPrompt,
+                tree_data=tree_data,
+                environment=True,
+                collection_schemas=self.use_elysia_collections,
+                tasks_completed=True,
+                message_update=True,
+                reasoning=tree_data.settings.BASE_USE_REASONING,
+            )
 
-        results = [
-            TrainingUpdate(
-                model="decision",
-                inputs=tree_data.to_json(),
-                outputs={k: v for k, v in output.__dict__["_store"].items()},
-            ),
-            TreeUpdate(
-                from_node=self.id,
-                to_node=output.function_name,
-                reasoning=output.reasoning,
-                last_in_branch=True,
-            ),
-            Status(self.options[output.function_name]["status"]),
-        ]
+            decision_executor = AssertedModule(
+                decision_module,
+                assertion=self._tool_assertion,
+                max_tries=2,
+            )
 
-        if output.function_name != "text_response":
-            results.append(Response(output.message_update))
+            if tree_data.settings.USE_FEEDBACK:
+                if not client_manager.is_client:
+                    raise ValueError(
+                        "A Weaviate conneciton is required for the experimental `use_feedback` method. "
+                        "Please set the WCD_URL and WCD_API_KEY in the settings. "
+                        "Or, set `use_feedback` to False."
+                    )
+
+                output, uuids = await decision_executor.aforward_with_feedback_examples(
+                    feedback_model="decision",
+                    client_manager=client_manager,
+                    base_lm=base_lm,
+                    complex_lm=complex_lm,
+                    instruction=self.instruction,
+                    tree_count=tree_data.tree_count_string(),
+                    available_actions=available_options,
+                    unavailable_actions=unavailable_options,
+                    successive_actions=successive_actions,
+                    num_base_lm_examples=3,
+                    return_example_uuids=True,
+                )
+            else:
+                output = await decision_executor.aforward(
+                    instruction=self.instruction,
+                    tree_count=tree_data.tree_count_string(),
+                    available_actions=available_options,
+                    unavailable_actions=unavailable_options,
+                    successive_actions=successive_actions,
+                    lm=base_lm,
+                )
+
+            if output.function_name.startswith("'") and output.function_name.endswith(
+                "'"
+            ):
+                output.function_name = output.function_name[1:-1]
+            elif output.function_name.startswith('"') and output.function_name.endswith(
+                '"'
+            ):
+                output.function_name = output.function_name[1:-1]
+            elif output.function_name.startswith("`") and output.function_name.endswith(
+                "`"
+            ):
+                output.function_name = output.function_name[1:-1]
+
+            if output.function_name not in available_tools:
+                raise Exception(
+                    f"Model picked an action `{output.function_name}` that is not in the available tools: {available_tools}"
+                )
+
+            decision = Decision(
+                output.function_name,
+                output.function_inputs,
+                output.reasoning if tree_data.settings.BASE_USE_REASONING else "",
+                output.impossible,
+                output.end_actions and bool(self.options[output.function_name]["end"]),
+            )
+
+            results = [
+                TrainingUpdate(
+                    module_name="decision",
+                    inputs=tree_data.to_json(),
+                    outputs={k: v for k, v in output.__dict__["_store"].items()},
+                ),
+                Status(str(self.options[output.function_name]["status"])),
+            ]
+
+            if output.function_name != "text_response":
+                results.append(Response(output.message_update))
+
+            if tree_data.settings.USE_FEEDBACK and len(uuids) > 0:
+                results.append(FewShotExamples(uuids))
+
+        else:
+            decision = Decision(
+                function_name=list(available_options.keys())[0],
+                reasoning=f"Only one option available: {list(available_options.keys())[0]} (and no function inputs are needed).",
+                impossible=False,
+                function_inputs={},
+                end_actions=(
+                    bool(self.options[list(available_options.keys())[0]]["end"])
+                    and self.options[list(available_options.keys())[0]]["next"] is None
+                ),
+            )
+
+            results: list[TrainingUpdate | Status | Response | FewShotExamples] = [
+                Status(str(self.options[list(available_options.keys())[0]]["status"])),
+            ]
 
         return decision, results
 
@@ -253,9 +570,6 @@ class DecisionNode:
         return memory_usage
 
 
-# TODO: move these methods to the main tree, perhaps?
-#       and each of these methods could do the auxiliary tasks e.g. updating environment, conversation history, etc.
-# TODO: but could we also clean up the tree by moving things to different classes?
 class TreeReturner:
     """
     Class to parse the output of the tree to the frontend.
@@ -270,80 +584,183 @@ class TreeReturner:
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.tree_index = tree_index
+        self.store = []
 
     def set_tree_index(self, tree_index: int):
         self.tree_index = tree_index
 
+    def clear_store(self):
+        self.store = []
+
+    def add_prompt(self, prompt: str, query_id: str):
+        self.store.append(
+            {
+                "type": "user_prompt",
+                "id": str(uuid.uuid4()),
+                "user_id": self.user_id,
+                "conversation_id": self.conversation_id,
+                "query_id": query_id,
+                "payload": {
+                    "prompt": prompt,
+                },
+            }
+        )
+
     async def __call__(
         self,
-        result: Return | TreeUpdate,
+        result: Result | TreeUpdate | Update | Text | Error,
         query_id: str,
-        last_in_tree: bool = False,
-    ):
-        if isinstance(result, Update):
-            return await result.to_frontend(self.conversation_id, query_id)
+    ) -> dict[str, str | dict] | None:
 
-        if isinstance(result, Return):
-            return await result.to_frontend(
+        if isinstance(result, (Update, Text, Result, Error)):
+            payload = await result.to_frontend(
                 self.user_id, self.conversation_id, query_id
             )
+            self.store.append(payload)
+            return payload
 
         if isinstance(result, TreeUpdate):
-            return await result.to_frontend(
+            payload = await result.to_frontend(
                 self.user_id,
                 self.conversation_id,
                 query_id,
                 self.tree_index,
-                last_in_tree,
             )
+            self.store.append(payload)
+            return payload
 
 
-class BranchVisitor(ast.NodeVisitor):
-    def __init__(self):
-        self.branches = []
-
-    def _evaluate_constant(self, node):
-        """Convert AST Constant node to its actual value."""
-        return node.value
-
-    def _evaluate_dict(self, node):
-        """Convert AST Dict node to a regular Python dictionary."""
-        if isinstance(node, ast.Dict):
-            return {
-                self._evaluate_constant(key): self._evaluate_constant(value)
-                for key, value in zip(node.keys, node.values)
-            }
-        return None
-
-    def visit_Call(self, node):
-        # Check if the call is creating a Branch object
-        if isinstance(node.func, ast.Name) and node.func.id == "Branch":
-            # Extract the updates dictionary from the Branch constructor
-            if node.args:
-                dict_node = node.args[0]
-                evaluated_dict = self._evaluate_dict(dict_node)
-                if evaluated_dict:
-                    self.branches.append(evaluated_dict)
-        self.generic_visit(node)
+async def create_conversation_title(conversation: list[dict], lm: dspy.LM):
+    title_creator = dspy.Predict(TitleCreatorPrompt)
+    title = await title_creator.aforward(
+        conversation=conversation,
+        lm=lm,
+    )
+    return title.title
 
 
 async def get_follow_up_suggestions(
-    tree_data: TreeData, current_suggestions: list[str], config: Settings
+    tree_data: TreeData,
+    current_suggestions: list[str],
+    lm: dspy.LM,
+    num_suggestions: int = 2,
+    context: str | None = None,
 ):
 
     # load dspy model for suggestor
     follow_up_suggestor = dspy.Predict(FollowUpSuggestionsPrompt)
 
+    if context is None:
+        context = (
+            "System context: You are an agentic RAG service querying or aggregating information from Weaviate collections via filtering, "
+            "sorting, multi-collection queries, summary statistics. "
+            "Uses tree-based approach with specialized agents and decision nodes for dynamic information retrieval, "
+            "summary generation, and real-time results display while maintaining natural conversation flow. "
+            "Create questions that are natural follow-ups to the user's prompt, "
+            "which they may find interesting or create relevant insights to the already retrieved data. "
+            "Or, questions which span across other collections, but are still relevant to the user's prompt."
+        )
+
     # get prediction
     prediction = await follow_up_suggestor.aforward(
         user_prompt=tree_data.user_prompt,
-        reference=create_reference(),
+        reference=tree_data.atlas.datetime_reference,
         conversation_history=tree_data.conversation_history,
-        environment=tree_data.environment.to_json(),
+        environment=tree_data.environment.environment,
         data_information=tree_data.output_collection_metadata(with_mappings=False),
         old_suggestions=current_suggestions,
-        lm=load_base_lm(config),
+        context=context,
+        num_suggestions=num_suggestions,
+        lm=lm,
     )
-    config.logger.debug(f"Follow-up suggestions: {prediction.suggestions}")
 
     return prediction.suggestions
+
+
+async def get_saved_trees_weaviate(
+    collection_name: str,
+    client_manager: ClientManager | None = None,
+    user_id: str | None = None,
+):
+    """
+    Get all saved trees from a Weaviate collection.
+
+    Args:
+        collection_name (str): The name of the collection to get the trees from.
+        client_manager (ClientManager): The client manager to use.
+            If not provided, a new ClientManager will be created from environment variables.
+        user_id (str): The user ID to get the trees from.
+            If not provided, the trees will be retrieved from the collection without any filters.
+
+    Returns:
+        dict: A dictionary of tree UUIDs and their titles.
+    """
+    if client_manager is None:
+        client_manager = ClientManager()
+        close_after_use = True
+    else:
+        close_after_use = False
+
+    if user_id is not None:
+        user_id_filter = Filter.by_property("user_id").equal(user_id)
+    else:
+        user_id_filter = None
+
+    async with client_manager.connect_to_async_client() as client:
+
+        if not await client.collections.exists(collection_name):
+            return {}
+
+        collection = client.collections.get(collection_name)
+
+        len_collection = (
+            await collection.aggregate.over_all(
+                total_count=True,
+                filters=user_id_filter,
+            )
+        ).total_count
+
+        response = await collection.query.fetch_objects(
+            limit=len_collection,
+            sort=Sort.by_update_time(ascending=False),
+            return_metadata=MetadataQuery(last_update_time=True),
+            filters=user_id_filter,
+        )
+
+    if close_after_use:
+        await client_manager.close_clients()
+
+    trees = {
+        obj.properties["conversation_id"]: {
+            "title": obj.properties["title"],
+            "last_update_time": format_datetime(obj.metadata.last_update_time),
+        }
+        for obj in response.objects
+    }
+
+    return trees
+
+
+async def delete_tree_from_weaviate(
+    conversation_id: str,
+    collection_name: str,
+    client_manager: ClientManager | None = None,
+):
+    """
+    Delete a tree from a Weaviate collection.
+
+    Args:
+        conversation_id (str): The conversation ID of the tree to delete.
+        collection_name (str): The name of the collection to delete the tree from.
+        client_manager (ClientManager): The client manager to use.
+            If not provided, a new ClientManager will be created from environment variables.
+    """
+
+    if client_manager is None:
+        client_manager = ClientManager()
+
+    async with client_manager.connect_to_async_client() as client:
+        collection = client.collections.get(collection_name)
+        uuid = generate_uuid5(conversation_id)
+        if await collection.data.exists(uuid):
+            await collection.data.delete_by_id(uuid)

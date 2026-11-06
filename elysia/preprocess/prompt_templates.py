@@ -1,7 +1,5 @@
-from typing import Literal
-
 import dspy
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CollectionSummariserPrompt(dspy.Signature):
@@ -93,16 +91,20 @@ class ReturnTypePrompt(dspy.Signature):
     )
 
 
-class FieldMapping(BaseModel):
-    input_field_name: str
-    output_field_name: str
-
-
 class DataMappingPrompt(dspy.Signature):
     """
     You are an expert at mapping data fields to existing field names.
     """
 
+    mapping_type: str = dspy.InputField(
+        desc=(
+            "The type of mapping to perform. "
+            "Some examples are 'conversation', 'message', 'ticket', 'product', 'document', 'table', 'generic'. "
+            "If the type is 'conversation', then the field mapping should include a 'conversation_id' field and a 'message_id' field. "
+            "If there is no suitable mapping, return these fields as empty strings."
+        ),
+        format=str,
+    )
     input_data_fields: list[str] = dspy.InputField(
         desc="The input fields to map.", format=list[str]
     )
@@ -113,7 +115,7 @@ class DataMappingPrompt(dspy.Signature):
         desc="The data types of the input fields, a dictionary with key value pairs corresponding to the field and its data type.",
         format=dict[str, str],
     )
-    collection_information: dict = dspy.InputField(
+    collection_information: dict[str, str | dict] = dspy.InputField(
         desc="""
         Information about the collection.
         This is of the form:
@@ -121,15 +123,19 @@ class DataMappingPrompt(dspy.Signature):
             "name": collection name,
             "length": number of objects in the collection,
             "summary": summary of the collection,
-            "fields": {
-                "field_name": {
-                    "groups": a comprehensive list of all unique text values that exist in the field. if the field is not text, this should be an empty list,
+            "fields": [
+                {
+                    "name": field_name,
+                    "type": the data type of the field.
+                    "groups": a dict with the value and count of each group.
+                        a comprehensive list of all unique values that exist in the field.
+                        if this is None, then no relevant groups were found.
+                        these values are string, but the actual values in the collection are the 'type' of the field.
                     "mean": mean of the field. if the field is text, this refers to the means length (in tokens) of the texts in this field. if the type is a list, this refers to the mean length of the lists,
                     "range": minimum and maximum values of the length.
-                    "type": the data type of the field.
                 },
                 ...
-            }
+            ]
         }
         """.strip(),
         format=str,
@@ -164,4 +170,54 @@ class DataMappingPrompt(dspy.Signature):
         The keys in your output dictionary should be the input_field_names and no others.
         """.strip(),
         format=dict[str, str],
+    )
+
+
+class PromptSuggestorPrompt(dspy.Signature):
+    """
+    You are an expert at suggesting prompts for a given data collection.
+    """
+
+    collection_information: dict[str, str | dict] = dspy.InputField(
+        desc="""
+        Information about the collection.
+        This is of the form:
+        {
+            "name": collection name,
+            "length": number of objects in the collection,
+            "summary": summary of the collection,
+            "fields": [
+                {
+                    "name": field_name,
+                    "groups": a dict with the value and count of each group.
+                        a comprehensive list of all unique values that exist in the field.
+                        if this is None, then no relevant groups were found.
+                        these values are string, but the actual values in the collection are the 'type' of the field.
+                    "mean": mean of the field. if the field is text, this refers to the means length (in tokens) of the texts in this field. if the type is a list, this refers to the mean length of the lists,
+                    "range": minimum and maximum values of the length.
+                    "type": the data type of the field.
+                },
+                ...
+            ]
+        }
+        """.strip(),
+        format=str,
+    )
+    example_objects: list[dict] = dspy.InputField(
+        desc="Example objects to help you understand the data.", format=list[dict]
+    )
+
+    prompt_suggestions: list[str] = dspy.OutputField(
+        desc="""
+        A list of prompts that would be useful for the user to use to query the data.
+        These should be in the form of a question that the user could ask to get information about the data.
+        These prompts should be around 5-10 words long.
+        They should show actual understanding of the data, and not just be a generic question.
+        Use no formatting, just the plain text of the prompt.
+        Aim to impress the user with your understanding of the data, and generate interesting and meaningful questions.
+        Also aim to create questions that will help the user dive deeper into their data.
+        Look for interactions between the fields, and connections that the user may not see themselves.
+        Produce 10 questions.
+        The prompts should either: specifically reference the collection, or be specific enough to the data that at a glance someone would recognise the data.
+        """
     )

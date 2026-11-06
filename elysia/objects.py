@@ -1,22 +1,114 @@
 import uuid
+import inspect
+import ast
+from typing import Any, AsyncGenerator, Callable, TYPE_CHECKING, overload
 
-from elysia.util.parsing import format_dict_to_serialisable
-
-
-class Branch:
-    """
-    These branches are searched in advance of the tree being run, iterating through code and function calls.
-    Used to build the decision tree display on the frontend.
-    """
-
-    def __init__(self, updates: dict):
-        self.updates = updates
+if TYPE_CHECKING:
+    from elysia.tree.tree import Tree
 
 
-class Tool:
+class ToolMeta(type):
+    """Metaclass that extracts tool metadata from __init__ method."""
+
+    _tool_name: str | None = None
+    _tool_description: str | None = None
+    _tool_inputs: dict | None = None
+    _tool_end: bool | None = None
+
+    @staticmethod
+    def _convert_ast_dict(ast_dict: ast.Dict) -> dict:
+        out = {}
+        for i in range(len(ast_dict.keys)):
+            k: ast.Constant = ast_dict.keys[i]  # type: ignore
+            v: ast.Dict | ast.List | ast.Constant = ast_dict.values[i]  # type: ignore
+
+            if isinstance(v, ast.Dict):
+                out[k.value] = ToolMeta._convert_ast_dict(v)
+            elif isinstance(v, ast.List):
+                out[k.value] = ToolMeta._convert_ast_list(v)
+            elif isinstance(v, ast.Constant):
+                out[k.value] = v.value
+        return out
+
+    @staticmethod
+    def _convert_ast_list(ast_list: ast.List) -> list:
+        out = []
+        for v in ast_list.values:  # type: ignore
+            if isinstance(v, ast.Dict):
+                out.append(ToolMeta._convert_ast_dict(v))
+            elif isinstance(v, ast.List):
+                out.append(ToolMeta._convert_ast_list(v))
+            elif isinstance(v, ast.Constant):
+                out.append(v.value)
+        return out
+
+    def __new__(cls, name, bases, namespace):
+        new_class = super().__new__(cls, name, bases, namespace)
+
+        # Skip the base Tool class itself
+        if name == "Tool":
+            return new_class
+
+        # Extract metadata from __init__ method if it exists
+        if "__init__" in namespace:
+            try:
+                init_method = namespace["__init__"]
+                source = inspect.getsource(init_method)
+                tree = ast.parse(source.strip())
+
+                # Find the super().__init__() call and extract arguments
+                for node in ast.walk(tree):
+                    if (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "__init__"
+                        and isinstance(node.func.value, ast.Call)
+                        and isinstance(node.func.value.func, ast.Name)
+                        and node.func.value.func.id == "super"
+                    ):
+
+                        # Extract keyword arguments
+                        for keyword in node.keywords:
+                            if keyword.arg == "name" and isinstance(
+                                keyword.value, ast.Constant
+                            ):
+                                new_class._tool_name = keyword.value.value
+                            elif keyword.arg == "description" and isinstance(
+                                keyword.value, ast.Constant
+                            ):
+                                new_class._tool_description = keyword.value.value
+                            elif keyword.arg == "inputs" and isinstance(
+                                keyword.value, ast.Dict
+                            ):
+                                new_class._tool_inputs = ToolMeta._convert_ast_dict(
+                                    keyword.value
+                                )
+                            elif keyword.arg == "end" and isinstance(
+                                keyword.value, ast.Constant
+                            ):
+                                new_class._tool_end = keyword.value.value
+                        break
+            except Exception:
+                # If parsing fails, just continue without setting class attributes
+                pass
+
+        return new_class
+
+
+class Tool(metaclass=ToolMeta):
     """
     The generic Tool class, which will be a superclass of any tools used by Elysia.
     """
+
+    @classmethod
+    def get_metadata(cls) -> dict[str, str | bool | dict | None]:
+        """Get tool metadata without instantiation."""
+        return {
+            "name": getattr(cls, "_tool_name", None),
+            "description": getattr(cls, "_tool_description", None),
+            "inputs": getattr(cls, "_tool_inputs", None),
+            "end": getattr(cls, "_tool_end", False),
+        }
 
     def __init__(
         self,
@@ -25,7 +117,6 @@ class Tool:
         status: str = "",
         inputs: dict = {},
         end: bool = False,
-        rule: bool = False,
         **kwargs,
     ):
         """
@@ -45,20 +136,18 @@ class Tool:
                 }
                 ```
             end (bool): Whether the tool is an end tool. Optional, defaults to False.
-            rule (bool): Whether the tool is a rule tool. Optional, defaults to False.
         """
         self.name = name
         self.description = description
         self.inputs = inputs
         self.end = end
-        self.rule = rule
 
         if status == "":
             self.status = f"Running {self.name}..."
         else:
             self.status = status
 
-    def get_default_inputs(self):
+    def get_default_inputs(self) -> dict:
         return {
             key: value["default"] if "default" in value else None
             for key, value in self.inputs.items()
@@ -70,11 +159,13 @@ class Tool:
         base_lm,
         complex_lm,
         client_manager,
-    ):
+    ) -> tuple[bool, dict]:
         """
         This method is called to check if the tool should be run automatically.
         If this returns `True`, then the tool is immediately called at the start of the tree.
         Otherwise it does not appear in the decision tree.
+        You must also return a dictionary of inputs for the tool, which will be used to call the tool if `True` is returned.
+        If the inputs are None or an empty dictionary, then the default inputs will be used.
 
         This must be an async function.
 
@@ -86,8 +177,14 @@ class Tool:
 
         Returns:
             bool: True if the tool should be run automatically, False otherwise.
+            dict: A dictionary of inputs for the tool, with the following structure:
+                ```python
+                {
+                    input_name: input_value
+                }
+                ```
         """
-        return False
+        return False, {}
 
     async def is_tool_available(
         self,
@@ -95,7 +192,7 @@ class Tool:
         base_lm,
         complex_lm,
         client_manager,
-    ):
+    ) -> bool:
         """
         This method is called to check if the tool is available.
         If this returns `True`, then the tool is available to be used by the LLM.
@@ -118,12 +215,8 @@ class Tool:
         return True
 
     async def __call__(
-        self,
-        tree_data,
-        base_lm,
-        complex_lm,
-        client_manager,
-    ):
+        self, tree_data, inputs, base_lm, complex_lm, client_manager, **kwargs
+    ) -> AsyncGenerator[Any, None]:
         """
         This method is called to run the tool.
 
@@ -136,16 +229,235 @@ class Tool:
             complex_lm (LM): The complex language model, a dspy.LM object.
             client_manager (ClientManager): The client manager, a way of interfacing with a Weaviate client.
         """
-        pass
+        yield None
 
 
-class Reasoning:
-    def __init__(self, reasoning: str):
-        self.reasoning = reasoning
-        self.type = "reasoning"
+@overload
+def tool(
+    function: Callable,
+    *,
+    status: str | None = None,
+    end: bool = False,
+    tree: "Tree | None" = None,
+    branch_id: str | None = None,
+) -> Tool: ...
 
-    def to_json(self):
-        return {"reasoning": self.reasoning}
+
+@overload
+def tool(
+    function: None = None,
+    *,
+    status: str | None = None,
+    end: bool = False,
+    tree: "Tree | None" = None,
+    branch_id: str | None = None,
+) -> Callable[[Callable], Tool]: ...
+
+
+def tool(
+    function: Callable | None = None,
+    *,
+    status: str | None = None,
+    end: bool = False,
+    tree: "Tree | None" = None,
+    branch_id: str | None = None,
+) -> Callable[[Callable], Tool] | Tool:
+    """
+    Create a tool from a python function.
+    Use this decorator to create a tool from a function.
+    The function must be an async function or async generator function.
+
+    Args:
+        function (Callable): The function to create a tool from.
+        status (str | None): The status message to display while the tool is running.
+            Optional, defaults to None, which will use the default status message "Running {tool_name}...".
+        end (bool): Whether the tool can be at the end of the decision tree.
+            Set to True when this tool is allowed to end the conversation.
+            Optional, defaults to False.
+        tree (Tree | None): The tree to add the tool to.
+            Optional, defaults to None, which will not add the tool to the tree.
+        branch_id (str | None): The branch of the tree to add the tool to.
+            Optional, defaults to None, which will add the tool to the root branch.
+
+    Returns:
+        (Tool): The tool object which can be added to the tree (via `tree.add_tool(...)`).
+    """
+
+    def decorator(function: Callable) -> Tool:
+        async_function = inspect.iscoroutinefunction(function)
+        async_generator_function = inspect.isasyncgenfunction(function)
+
+        if not async_function and not async_generator_function:
+            raise TypeError(
+                "The provided function must be an async function or async generator function."
+            )
+
+        if "inputs" in list(function.__annotations__.keys()):
+            raise TypeError(
+                "The `inputs` argument is reserved in tool functions, please choose another name."
+            )
+
+        sig = inspect.signature(function)
+        defaults_mapping = {
+            k: v.default
+            for k, v in sig.parameters.items()
+            if v.default is not inspect.Parameter.empty
+        }
+
+        def list_to_list_of_dicts(result: list) -> list[dict]:
+            objects = []
+            for obj in result:
+                if isinstance(obj, dict):
+                    objects.append(obj)
+                elif isinstance(obj, int | float | bool):
+                    objects.append(
+                        {
+                            "tool_result": obj,
+                        }
+                    )
+                elif isinstance(obj, list):
+                    objects.append(list_to_list_of_dicts(obj))
+                else:
+                    objects.append(
+                        {
+                            "tool_result": obj,
+                        }
+                    )
+            return objects
+
+        def return_mapping(result, inputs: dict):
+            if isinstance(result, Result | Text | Update | Status | Error):
+                return result
+            elif isinstance(result, str):
+                return Response(result)
+            elif isinstance(result, int | float | bool):
+                return Result(
+                    objects=[
+                        {
+                            "tool_result": result,
+                        }
+                    ],
+                    metadata={
+                        "tool_name": function.__name__,
+                        "inputs_used": inputs,
+                    },
+                )
+            elif isinstance(result, dict):
+                return Result(
+                    objects=[result],
+                    metadata={
+                        "tool_name": function.__name__,
+                        "inputs_used": inputs,
+                    },
+                )
+            elif isinstance(result, list):
+                return Result(
+                    objects=list_to_list_of_dicts(result),
+                    metadata={
+                        "tool_name": function.__name__,
+                        "inputs_used": inputs,
+                    },
+                )
+            else:
+                return Result(
+                    objects=[
+                        {
+                            "tool_result": result,
+                        }
+                    ],
+                    metadata={
+                        "tool_name": function.__name__,
+                        "inputs_used": inputs,
+                    },
+                )
+
+        class ToolClass(Tool):
+            def __init__(self, **kwargs):
+                super().__init__(
+                    name=function.__name__,
+                    description=function.__doc__ or "",
+                    status=(
+                        status
+                        if status is not None
+                        else f"Running {function.__name__}..."
+                    ),
+                    inputs={
+                        input_key: {
+                            "description": "",
+                            "type": input_value,
+                            "default": defaults_mapping.get(input_key, None),
+                            "required": defaults_mapping.get(input_key, None)
+                            is not None,
+                        }
+                        for input_key, input_value in function.__annotations__.items()
+                        if input_key
+                        not in [
+                            "tree_data",
+                            "base_lm",
+                            "complex_lm",
+                            "client_manager",
+                            "return",
+                        ]
+                    },
+                    end=end,
+                )
+                self._original_function = function
+
+            async def __call__(
+                self, tree_data, inputs, base_lm, complex_lm, client_manager, **kwargs
+            ):
+
+                if async_function:
+                    tool_output = [
+                        await function(
+                            **inputs,
+                            **{
+                                k: v
+                                for k, v in {
+                                    "tree_data": tree_data,
+                                    "base_lm": base_lm,
+                                    "complex_lm": complex_lm,
+                                    "client_manager": client_manager,
+                                    **kwargs,
+                                }.items()
+                                if k in function.__annotations__
+                            },
+                        )
+                    ]
+                elif async_generator_function:
+                    results = []
+                    async for result in function(
+                        **inputs,
+                        **{
+                            k: v
+                            for k, v in {
+                                "tree_data": tree_data,
+                                "base_lm": base_lm,
+                                "complex_lm": complex_lm,
+                                "client_manager": client_manager,
+                                **kwargs,
+                            }.items()
+                            if k in function.__annotations__
+                        },
+                    ):
+                        results.append(result)
+                    tool_output = results
+
+                for result in tool_output:
+                    mapped_result = return_mapping(result, inputs)
+                    yield mapped_result
+
+        tool_class = ToolClass()
+
+        if tree is not None:
+            tree.add_tool(tool_class, branch_id=branch_id)
+
+        return tool_class
+
+    if function is not None:
+        return decorator(function)
+    else:
+        return decorator
 
 
 class Return:
@@ -166,11 +478,45 @@ class Text(Return):
     But is not limited to this.
     """
 
-    def __init__(self, payload_type: str, objects: list[dict], metadata: dict = {}):
+    def __init__(
+        self,
+        payload_type: str,
+        objects: list[dict],
+        metadata: dict = {},
+        display: bool = True,
+    ):
         Return.__init__(self, "text", payload_type)
         self.objects = objects
         self.metadata = metadata
-        self.text = objects[0]["text"]
+        self.text = self._concat_text(self.objects)
+        self.display = display
+
+    def _concat_text(self, objects: list[dict]):
+        text = ""
+        for i, obj in enumerate(objects):
+            if "text" in obj:
+                spacer = ""
+                if (
+                    not obj["text"].endswith(" ")
+                    and not obj["text"].endswith("\n")
+                    and i != len(objects) - 1
+                ):
+                    spacer += " "
+
+                if (
+                    i != len(objects) - 1
+                    and "text" in objects[i + 1]
+                    and objects[i + 1]["text"].startswith("* ")
+                    and not obj["text"].endswith("\n")
+                ):
+                    spacer += "\n"
+
+                text += obj["text"] + spacer
+
+        text = text.replace("_REF_ID", "")
+        text = text.replace("REF_ID", "")
+        text = text.replace("  ", " ")
+        return text
 
     def to_json(self):
         return {
@@ -185,8 +531,12 @@ class Text(Return):
         conversation_id: str,
         query_id: str,
     ):
+        if not self.display:
+            return
+
         return {
             "type": self.frontend_type,
+            "id": self.frontend_type[:3] + "-" + str(uuid.uuid4()),
             "user_id": user_id,
             "conversation_id": conversation_id,
             "query_id": query_id,
@@ -195,9 +545,8 @@ class Text(Return):
 
 
 class Response(Text):
-    def __init__(self, text: str):
-        Text.__init__(self, "response", [{"text": text}])
-        self.text = text
+    def __init__(self, text: str, **kwargs):
+        Text.__init__(self, "response", [{"text": text}], **kwargs)
 
 
 class Update(Return):
@@ -214,9 +563,10 @@ class Update(Return):
     def to_json(self):
         return self.object
 
-    async def to_frontend(self, conversation_id: str, query_id: str):
+    async def to_frontend(self, user_id: str, conversation_id: str, query_id: str):
         return {
             "type": self.frontend_type,
+            "user_id": user_id,
             "conversation_id": conversation_id,
             "query_id": query_id,
             "id": self.frontend_type[:3] + "-" + str(uuid.uuid4()),
@@ -244,16 +594,6 @@ class Warning(Update):
         Update.__init__(self, "warning", {"text": text})
 
 
-class Error(Update):
-    """
-    Error message to be sent to the frontend.
-    """
-
-    def __init__(self, text: str):
-        self.text = text
-        Update.__init__(self, "error", {"text": text})
-
-
 class Completed(Update):
     """
     Completed message to be sent to the frontend (tree is complete all recursions).
@@ -277,10 +617,11 @@ class Result(Return):
         objects: list[dict],
         metadata: dict = {},
         payload_type: str = "default",
-        name: str = "generic",
+        name: str = "default",
         mapping: dict | None = None,
         llm_message: str | None = None,
-        unmapped_keys: list[str] = [],
+        unmapped_keys: list[str] = ["_REF_ID"],
+        display: bool = True,
     ):
         """
         Args:
@@ -301,6 +642,8 @@ class Result(Return):
                 - {num_objects}: The number of objects in the object
                 - {metadata_key}: Any key in the metadata dictionary
             unmapped_keys (list[str]): A list of keys that are not mapped to the frontend.
+            display (bool): Whether to display the result on the frontend when yielding this object.
+                Defaults to `True`.
         """
         Return.__init__(self, "result", payload_type)
         self.objects = objects
@@ -309,27 +652,10 @@ class Result(Return):
         self.mapping = mapping
         self.llm_message = llm_message
         self.unmapped_keys = unmapped_keys
+        self.display = display
 
     def __len__(self):
         return len(self.objects)
-
-    # TODO: _remove duplicates is unused, do we need it?
-    def _remove_duplicates(self, objects: list[dict | str]):
-        unique_objects = []
-        seen = set()
-
-        for obj in objects:
-            if isinstance(obj, dict):
-                # Convert dict to a string representation for comparison
-                obj_str = str(sorted(obj.items()))
-            else:
-                obj_str = str(obj)
-
-            if obj_str not in seen:
-                seen.add(obj_str)
-                unique_objects.append(obj)
-
-        return unique_objects
 
     def format_llm_message(self):
         """
@@ -343,6 +669,9 @@ class Result(Return):
         - {num_objects}: The number of objects in the object
         - {metadata_key}: Any key in the metadata dictionary
         """
+        if self.llm_message is None:
+            return ""
+
         return self.llm_message.format_map(
             {
                 "payload_type": self.payload_type,
@@ -353,6 +682,9 @@ class Result(Return):
         )
 
     def do_mapping(self, objects: list[dict]):
+
+        if self.mapping is None:
+            return objects
 
         output_objects = []
         for obj in objects:
@@ -380,8 +712,10 @@ class Result(Return):
                 Defaults to `False`.
 
         Returns:
-            list[dict]: A list of dictionaries, which can be serialised to JSON.
+            (list[dict]): A list of dictionaries, which can be serialised to JSON.
         """
+        from elysia.util.parsing import format_dict_to_serialisable
+
         assert all(
             isinstance(obj, dict) for obj in self.objects
         ), "All objects must be dictionaries"
@@ -407,7 +741,7 @@ class Result(Return):
         This is a wrapper around the `to_json` method.
         But the objects and metadata are inside a `payload` key, which also includes a `type` key,
         being the frontend identifier for the type of payload being sent.
-        (e.g. `ticket`, `ecommerce`, `message`, etc.)
+        (e.g. `ticket`, `product`, `message`, etc.)
 
         The outside of the payload also contains the user_id, conversation_id, and query_id.
 
@@ -417,7 +751,7 @@ class Result(Return):
             query_id (str): The query ID.
 
         Returns:
-            dict: The frontend payload, which is a dictionary with the following structure:
+            (dict): The frontend payload, which is a dictionary with the following structure:
                 ```python
                 {
                     "type": "result",
@@ -433,6 +767,9 @@ class Result(Return):
                 }
                 ```
         """
+        if not self.display:
+            return
+
         objects = self.to_json(mapping=True)
         if len(objects) == 0:
             return
@@ -460,7 +797,7 @@ class Result(Return):
         Otherwise a default message is used.
 
         Returns:
-            str: The formatted llm message.
+            (str): The formatted llm message.
         """
 
         if self.llm_message is not None:
@@ -479,35 +816,44 @@ class Retrieval(Result):
     def __init__(
         self,
         objects: list[dict],
+        metadata: dict = {},
         payload_type: str = "default",
         name: str | None = None,
-        metadata: dict = {},
         mapping: dict | None = None,
-        unmapped_keys: list[str] = ["uuid", "summary", "collection_name"],
-    ):
+        unmapped_keys: list[str] = [
+            "uuid",
+            "ELYSIA_SUMMARY",
+            "collection_name",
+            "_REF_ID",
+        ],
+        display: bool = True,
+    ) -> None:
         if name is None and "collection_name" in metadata:
-            name = metadata["collection_name"]
+            result_name = metadata["collection_name"]
         elif name is None:
-            name = "default"
+            result_name = "default"
+        else:
+            result_name = name
 
         Result.__init__(
             self,
             objects=objects,
             payload_type=payload_type,
             metadata=metadata,
-            name=name,
+            name=result_name,
             mapping=mapping,
             unmapped_keys=unmapped_keys,
+            display=display,
         )
 
-    def add_summaries(self, summaries: list[str] = []):
+    def add_summaries(self, summaries: list[str] = []) -> None:
         for i, obj in enumerate(self.objects):
             if i < len(summaries):
                 obj["ELYSIA_SUMMARY"] = summaries[i]
             else:
                 obj["ELYSIA_SUMMARY"] = ""
 
-    def llm_parse(self):
+    def llm_parse(self) -> str:
         out = ""
         count = len(self.objects)
 
@@ -532,20 +878,6 @@ class Retrieval(Result):
                 out += f"\nThis attempt at querying the collection: {self.metadata['collection_name']} was deemed impossible."
             if "impossible_reason" in self.metadata:
                 out += f"\nReasoning for impossibility: {self.metadata['impossible_reason']}"
-        if "assertion_error_message" in self.metadata:
-            out += f"\nWhen querying this collection ({self.metadata['collection_name']}), the following ASSERTION error occurred:"
-            out += f"\n<assertion_error_message>\n  {self.metadata['assertion_error_message']}\n</assertion_error_message>\n"
-            out += f"You should judge whether this error is avoidable, and choose your task accordingly."
-            out += f"An assertion error is _usually_ fixable by changing the query code (either now if that is your task, or in the future if you are not tasked with writing code for querying a collection currently)."
-            out += f"For example, if you are choosing a function to use (you are making a decision), you are not writing the query code, so do not try to fix it."
-            out += f"If you are writing the query code, you should try to fix it, based on this error message."
-        if "error_message" in self.metadata:
-            out += f"\nThe following GENERIC error occurred when querying this collection ({self.metadata['collection_name']}):"
-            out += f"\n<error_message>\n  {self.metadata['error_message']}\n</error_message>\n"
-            out += f"You should judge whether this error is avoidable, and choose your task accordingly."
-            out += f"These kind of errors are usually due to a problem outside of your control, such as a problem with the database or the internet connection."
-            out += f"You should probably not repeat this task/try to fix this error, but instead communicate apologies to the user and suggest alternatives based on this error."
-            out += f"Unless this is a Weaviate client error (such as a timeout/GRPC error), then you should try to repeat this task as it likely won't happen again."
         if "query_output" in self.metadata:
             out += f"\nThe query used was:\n{self.metadata['query_output']}"
         return out
@@ -555,7 +887,7 @@ class Retrieval(Result):
         user_id: str,
         conversation_id: str,
         query_id: str,
-    ):
+    ) -> dict | None:
         objects = self.to_json(mapping=True)
         if len(objects) == 0:
             return
@@ -577,3 +909,30 @@ class Retrieval(Result):
             "id": self.frontend_type[:3] + "-" + str(uuid.uuid4()),
             "payload": payload,
         }
+
+
+class Error(Update):
+    """
+    Error objects are used to communicate errors to the decision agent/tool calls.
+    When yielded, Error objects are automatically saved inside the TreeData object.
+    When calling the same tool again, the saved Error object is automatically loaded into any tool calls made with the same tool name.
+    All errors are shown to the decision agent to help decide whether the tool should be called again (retried), or a different tool should be called.
+    """
+
+    def __init__(self, feedback: str = "", error_message: str = ""):
+        """
+        Args:
+            feedback (str): The feedback to display to the decision agent.
+                Usually this will be the error message, but it could be formatted more specifically.
+        """
+        self.feedback = feedback
+        self.error_message = error_message
+
+        if feedback == "":
+            self.feedback = "An unknown issue occurred."
+
+        Update.__init__(
+            self,
+            "self_healing_error",
+            {"feedback": self.feedback, "error_message": self.error_message},
+        )

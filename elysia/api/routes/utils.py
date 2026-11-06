@@ -1,6 +1,3 @@
-# DSPy
-import dspy
-
 # FastAPI
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -8,10 +5,7 @@ from fastapi.responses import JSONResponse
 from elysia.api.api_types import (
     DebugData,
     FollowUpSuggestionsData,
-    GetUserRequestsData,
-    InstantReplyData,
     NERData,
-    ObjectRelevanceData,
     TitleData,
 )
 
@@ -23,18 +17,11 @@ from elysia.api.core.log import logger
 # Dependencies
 from elysia.api.dependencies.common import get_user_manager
 
-# LLM
-from elysia.api.services.prompt_templates import (
-    InstantReplyPrompt,
-    ObjectRelevancePrompt,
-    TitleCreatorPrompt,
-)
-
 # Services
 from elysia.api.services.user import UserManager
 
 # Settings
-from elysia.config import nlp, load_base_lm
+from elysia.config import nlp
 
 # util
 from elysia.api.core.log import logger
@@ -97,14 +84,10 @@ async def title(data: TitleData, user_manager: UserManager = Depends(get_user_ma
         )
 
     try:
-        settings = user_manager.users[data.user_id]["tree_manager"].settings
-        title_creator = dspy.Predict(TitleCreatorPrompt)
-        title = await title_creator.aforward(
-            text=data.text,
-            lm=load_base_lm(settings),
-        )
+        tree: Tree = await user_manager.get_tree(data.user_id, data.conversation_id)
+        title = await tree.create_conversation_title_async()
         return JSONResponse(
-            content={"title": title.title, "error": ""},
+            content={"title": title, "error": ""},
             status_code=200,
         )
 
@@ -138,7 +121,7 @@ async def title(data: TitleData, user_manager: UserManager = Depends(get_user_ma
 
 #     try:
 
-#         config = user_manager.get_user_config(data.user_id)
+#         config = user_manager.get_current_user_config(data.user_id)
 
 #         error = ""
 #         object_relevance = ObjectRelevanceExecutor()
@@ -180,19 +163,19 @@ async def follow_up_suggestions(
         )
         return JSONResponse(
             content={"suggestions": [], "error": "Conversation has timed out"},
-            status_code=401,
+            status_code=408,
         )
 
     try:
         # wait for tree event to be completed
         local_user = await user_manager.get_user_local(data.user_id)
         event = local_user["tree_manager"].get_event(data.conversation_id)
-        await event.wait()
+        # await event.wait()
 
         # get tree from user_id, conversation_id
         tree: Tree = await user_manager.get_tree(data.user_id, data.conversation_id)
 
-        suggestions = await tree.get_follow_up_suggestions()
+        suggestions = await tree.get_follow_up_suggestions_async()
 
         event.set()
 

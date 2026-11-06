@@ -14,25 +14,34 @@ class QueryData(BaseModel):
 
 
 class ViewPaginatedCollectionData(BaseModel):
-    user_id: str
-    collection_name: str
     page_size: int
     page_number: int
+    query: str = ""
     sort_on: Optional[str] = None
-    ascending: Optional[bool] = False
-    filter_config: Optional[dict[str, Any]] = {}
+    ascending: bool = False
+    filter_config: dict[str, Any] = {}
 
 
-# pass optional args as None to get defaults
 class InitialiseTreeData(BaseModel):
-    user_id: str
-    conversation_id: str
-    style: Optional[str] = None
-    agent_description: Optional[str] = None
-    end_goal: Optional[str] = None
-    branch_initialisation: Optional[str] = None
-    low_memory: Optional[bool] = False
-    settings: Optional[dict[str, Any]] = None
+    low_memory: bool = False
+
+
+class MetadataNamedVectorData(BaseModel):
+    name: str
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+
+class MetadataFieldData(BaseModel):
+    name: str
+    description: str
+
+
+class UpdateCollectionMetadataData(BaseModel):
+    named_vectors: Optional[List[MetadataNamedVectorData]] = None
+    summary: Optional[str] = None
+    mappings: Optional[dict[str, dict[str, str]]] = None
+    fields: Optional[List[MetadataFieldData]] = None
 
 
 class NERData(BaseModel):
@@ -43,12 +52,6 @@ class TitleData(BaseModel):
     user_id: str
     conversation_id: str
     text: str
-
-
-class GetObjectData(BaseModel):
-    user_id: str
-    collection_name: str
-    uuid: str
 
 
 class ObjectRelevanceData(BaseModel):
@@ -65,15 +68,6 @@ class ProcessCollectionData(BaseModel):
 
 class DebugData(BaseModel):
     conversation_id: str
-    user_id: str
-
-
-class CollectionMetadataData(BaseModel):
-    user_id: str
-    collection_name: str
-
-
-class UserCollectionsData(BaseModel):
     user_id: str
 
 
@@ -94,10 +88,6 @@ class GetUserRequestsData(BaseModel):
     user_id: str
 
 
-class FeedbackMetadataData(BaseModel):
-    user_id: str
-
-
 class InstantReplyData(BaseModel):
     user_id: str
     user_prompt: str
@@ -108,48 +98,22 @@ class FollowUpSuggestionsData(BaseModel):
     conversation_id: str
 
 
-# TODO: hash the api keys
-class Config(BaseModel):
-    settings: dict[str, Any]
-    style: str
-    agent_description: str
-    end_goal: str
-    branch_initialisation: str
-    config_id: Optional[str] = None
+# class BackendConfig(BaseModel):
+#     settings: dict[str, Any]
+#     style: str
+#     agent_description: str
+#     end_goal: str
+#     branch_initialisation: str
 
 
-class InitialiseUserData(BaseModel):
-    user_id: str
-    default_models: bool
-    settings: Optional[dict[str, Any]] = None
-    style: Optional[str] = "Informative, polite and friendly."
-    agent_description: Optional[str] = (
-        "You search and query Weaviate to satisfy the user's query, providing a concise summary of the results."
-    )
-    end_goal: Optional[str] = (
-        "You have satisfied the user's query, and provided a concise summary of the results. "
-        "Or, you have exhausted all options available, or asked the user for clarification."
-    )
-    branch_initialisation: Optional[Literal["one_branch", "multi_branch", "empty"]] = (
-        "one_branch"
-    )
+class SaveConfigUserData(BaseModel):
+    name: str
+    config: dict[str, Any]
+    frontend_config: dict[str, Any]
+    default: bool
 
 
-class DefaultModelsUserData(BaseModel):
-    user_id: str
-
-
-class DefaultModelsTreeData(BaseModel):
-    user_id: str
-    conversation_id: str
-
-
-class EnvironmentSettingsUserData(BaseModel):
-    user_id: str
-
-
-class ChangeConfigUserData(BaseModel):
-    user_id: str
+class SaveConfigTreeData(BaseModel):
     settings: Optional[dict[str, Any]] = None
     style: Optional[str] = None
     agent_description: Optional[str] = None
@@ -157,51 +121,35 @@ class ChangeConfigUserData(BaseModel):
     branch_initialisation: Optional[str] = None
 
 
-class ChangeConfigTreeData(BaseModel):
+class UpdateFrontendConfigData(BaseModel):
+    config: dict[str, Any]
+
+
+class AddToolToTreeData(BaseModel):
+    tool_name: str
+    branch_id: str
+    from_tool_ids: list[str]
+
+
+class RemoveToolFromTreeData(BaseModel):
+    tool_name: str
+    branch_id: str
+    from_tool_ids: list[str]
+
+
+class AddBranchToTreeData(BaseModel):
+    id: str
+    description: str
+    instruction: str
+    from_branch_id: str
+    from_tool_ids: list[str]
+    status: str
+    root: bool
+
+
+class RemoveBranchFromTreeData(BaseModel):
+    id: str
+
+
+class AvailableModelsData(BaseModel):
     user_id: str
-    conversation_id: str
-    settings: Optional[dict[str, Any]] = None
-    style: Optional[str] = None
-    agent_description: Optional[str] = None
-    end_goal: Optional[str] = None
-    branch_initialisation: Optional[Literal["one_branch", "multi_branch", "empty"]] = (
-        None
-    )
-
-
-class SaveConfigData(BaseModel):
-    user_id: str
-    config_id: str
-    config: Config
-
-
-class LoadConfigUserData(BaseModel):
-    user_id: str
-    config_id: str
-    include_atlas: bool
-    include_branch_initialisation: bool
-    include_settings: bool
-
-
-class LoadConfigTreeData(BaseModel):
-    user_id: str
-    conversation_id: str
-    config_id: str
-    include_atlas: bool
-    include_branch_initialisation: bool
-    include_settings: bool
-
-
-class ListConfigsData(BaseModel):
-    user_id: str
-
-
-# class ChangeAtlasUserData(BaseModel):
-#     user_id: str
-#     atlas: dict[str, str]
-
-
-# class ChangeAtlasTreeData(BaseModel):
-#     user_id: str
-#     conversation_id: str
-#     atlas: dict[str, str]

@@ -1,4 +1,4 @@
-from typing import List
+from typing import Union
 from logging import Logger
 
 from rich import print
@@ -7,14 +7,21 @@ from rich.panel import Panel
 import dspy
 
 from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
-from elysia.util.reference import create_reference
-from elysia.objects import Branch, Reasoning, Response, Status, Tool, Warning
+from elysia.objects import Response, Status, Tool, Error
 from elysia.tools.retrieval.objects import Aggregation
-from elysia.tools.retrieval.prompt_templates import AggregationPrompt
-from elysia.tools.retrieval.util import execute_weaviate_aggregation
+from elysia.tools.retrieval.prompt_templates import (
+    AggregationPrompt,
+    construct_aggregation_output_prompt,
+)
+from elysia.tools.retrieval.util import (
+    execute_weaviate_aggregation,
+    QueryError,
+    AggregationOutput,
+    VectorisedAggregationOutput,
+)
 from elysia.tree.objects import TreeData
 from elysia.util.client import ClientManager
-from elysia.util.objects import TrainingUpdate, TreeUpdate
+from elysia.util.objects import TrainingUpdate, FewShotExamples
 from elysia.util.parsing import format_aggregation_response
 
 
@@ -29,23 +36,38 @@ class Aggregate(Tool):
         super().__init__(
             name="aggregate",
             description="""
-            Perform functions such as counting, averaging, summing, etc. on the data, grouping by some property and returning metrics/statistics about different categories.
-            Or providing a high level overview of the dataset.
-            Note this does not include viewing the data, only performing operations to find quantities and summary statistics.
-            You will be given information about the collection, such as the fields and types of the data.
-            Then, aggregate over different categories of the collection, with operations: top_occurences, count, sum, average, min, max, median, mode, group_by.
-            Without viewing the data.
+            Query the knowledge base specifically for aggregation queries.
+            Performs calculations (counting, averaging, summing, etc.) and provides summary statistics on data.
+            It can group data by properties and apply filters directly, without needing a prior query.
+            Aggregation queries can be filtered.
+            This can be applied directly on any collections in the schema.
+            Use this tool when you need counts, sums, averages, or other summary statistics on properties in the collections.
+            'aggregate' should be considered the first choice for tasks involving counting, summing, averaging, 
+            or other statistical operations, even when filtering is required.
             """,
             status="Aggregating...",
             inputs={
                 "collection_names": {
                     "description": "the names of the collections that are most relevant to the aggregation. If you are unsure, give all collections.",
-                    "type": "list",
+                    "type": list[str],
                     "default": [],
                 },
             },
             end=False,
         )
+
+    async def is_tool_available(
+        self,
+        tree_data: TreeData,
+        base_lm: dspy.LM,
+        complex_lm: dspy.LM,
+        client_manager: ClientManager,
+    ) -> bool:
+        """
+        Only available when there is a Weaviate connection.
+        If this tool is not available, inform the user that they need to set the WCD_URL and WCD_API_KEY in the settings.
+        """
+        return client_manager.is_client
 
     def _find_previous_aggregations(
         self, environment: dict, collection_names: list[str]
@@ -69,55 +91,6 @@ class Aggregate(Tool):
 
         return previous_aggregations
 
-    async def _handle_generic_error(
-        self,
-        e: Exception,
-        collection_name: str,
-        user_prompt: str,
-    ):
-        metadata = {
-            "collection_name": collection_name,
-            "error_message": str(e),
-            "impossible": user_prompt,
-        }
-
-        if self.logger:
-            self.logger.warning(
-                f"Oops! Something went wrong during the LLM aggregation. Continuing..."
-            )
-            self.logger.debug(f"The error was: {str(e)}")
-
-        yield Aggregation([], metadata)
-        yield Warning(
-            f"Oops! Something went wrong during the LLM aggregation. Continuing..."
-        )
-
-    async def _handle_aggregation_error(
-        self,
-        e: Exception,
-        collection_name: str,
-        user_prompt: str,
-        aggregation_output: dict | List[dict] | None = None,
-    ):
-        metadata = {
-            "collection_name": collection_name,
-            "assertion_error_message": str(e),
-            "impossible": user_prompt,
-        }
-        if aggregation_output is not None:
-            metadata["aggregation_output"] = aggregation_output
-
-        if self.logger:
-            self.logger.warning(
-                f"Oops! Something went wrong when executing the aggregation. Continuing..."
-            )
-            self.logger.debug(f"The error was: {str(e)}")
-
-        yield Aggregation([], metadata)
-        yield Warning(
-            f"Oops! Something went wrong when executing the aggregation. Continuing..."
-        )
-
     def _fix_collection_names(self, collection_names: list[str], schemas: dict):
         return [
             collection_name
@@ -138,13 +111,6 @@ class Aggregate(Tool):
         complex_lm: dspy.LM,
         **kwargs,
     ):
-        # Set up the branch spanning off the node
-        Branch(
-            {
-                "name": "Aggregation Generator",
-                "description": "Generate summary statistics of the data via an LLM aggregation query.",
-            }
-        )
 
         if self.logger:
             self.logger.debug("Aggregation Tool called!")
@@ -161,17 +127,52 @@ class Aggregate(Tool):
             )
 
         # Set up the dspy model
+        aggregation_prompt = AggregationPrompt
+
+        # check if collections are vectorised
+        vectorised_by_collection = {
+            collection_name: (
+                schemas[collection_name]["vectorizer"] is not None
+                or (
+                    schemas[collection_name]["named_vectors"] is not None
+                    and schemas[collection_name]["named_vectors"] != []
+                )
+            )
+            for collection_name in collection_names
+        }
+
+        if any(vectorised_by_collection.values()):
+            aggregation_prompt = aggregation_prompt.append(
+                name="aggregation_queries",
+                type_=Union[list[VectorisedAggregationOutput], None],
+                field=dspy.OutputField(
+                    desc=construct_aggregation_output_prompt(True),
+                ),
+            )
+        else:
+            aggregation_prompt = aggregation_prompt.append(
+                name="aggregation_queries",
+                type_=Union[list[AggregationOutput], None],
+                field=dspy.OutputField(
+                    desc=construct_aggregation_output_prompt(False),
+                ),
+            )
+
         aggregate_generator = ElysiaChainOfThought(
-            AggregationPrompt,
+            aggregation_prompt,
             tree_data=tree_data,
             environment=True,
             collection_schemas=True,
             tasks_completed=True,
             message_update=True,
             collection_names=inputs["collection_names"],
+            reasoning=tree_data.settings.COMPLEX_USE_REASONING,
         )
 
         if self.logger:
+            self.logger.info(
+                f"Any collections vectorised: {any(vectorised_by_collection.values())}"
+            )
             self.logger.info(f"Collection names received: {collection_names}")
 
         # Get some metadata about the collection
@@ -181,29 +182,37 @@ class Aggregate(Tool):
 
         # Generate query with LLM
         try:
-            aggregation = await aggregate_generator.aforward(
-                available_collections=collection_names,
-                previous_aggregation_queries=previous_aggregations,
-                lm=complex_lm,
-            )
+            if tree_data.settings.USE_FEEDBACK:
+                aggregation, example_uuids = (
+                    await aggregate_generator.aforward_with_feedback_examples(
+                        feedback_model="aggregate",
+                        client_manager=client_manager,
+                        base_lm=base_lm,
+                        complex_lm=complex_lm,
+                        available_collections=collection_names,
+                        previous_aggregation_queries=previous_aggregations,
+                        num_base_lm_examples=6,
+                        return_example_uuids=True,
+                    )
+                )
+            else:
+                aggregation = await aggregate_generator.aforward(
+                    lm=complex_lm,
+                    available_collections=collection_names,
+                    previous_aggregation_queries=previous_aggregations,
+                )
         except Exception as e:
-            for collection_name in collection_names:
-                async for yield_object in self._handle_generic_error(
-                    e,
-                    collection_name,
-                    tree_data.user_prompt,
-                ):
-                    yield yield_object
+            yield Error(error_message=str(e))
             return
+
+        if self.logger and aggregation.aggregation_queries is not None:
+            self.logger.debug(f"Aggregation: {aggregation.aggregation_queries}")
 
         # Yield results to front end
         yield Response(text=aggregation.message_update)
-        yield Reasoning(reasoning=aggregation.reasoning)
-        yield TrainingUpdate(
-            model="aggregate",
-            inputs=tree_data.to_json(),
-            outputs=aggregation.__dict__["_store"],
-        )
+
+        if tree_data.settings.USE_FEEDBACK:
+            yield FewShotExamples(uuids=example_uuids)
 
         # Return if model deems aggregation impossible
         if aggregation.impossible or aggregation.aggregation_queries is None:
@@ -215,27 +224,23 @@ class Aggregate(Tool):
                 metadata = {
                     "collection_name": collection_name,
                     "impossible": tree_data.user_prompt,
-                    "impossible_reasoning": aggregation.reasoning,
+                    "impossible_reasoning": (
+                        aggregation.reasoning
+                        if tree_data.settings.COMPLEX_USE_REASONING
+                        else ""
+                    ),
                     "aggregation_output": (
-                        aggregation.aggregation_queries.aggregation_outputs.model_dump()
+                        aggregation.aggregation_queries.model_dump()
                         if aggregation.aggregation_queries is not None
                         else None
                     ),
                 }
                 yield Aggregation([], metadata)
 
-            yield TreeUpdate(
-                from_node="aggregate",
-                to_node="aggregate_executor",
-                reasoning=aggregation.reasoning,
-                last_in_branch=True,
-            )
             return
 
         # Go through each response
-        for i, aggregation_output in enumerate(
-            aggregation.aggregation_queries.aggregation_outputs
-        ):
+        for i, aggregation_output in enumerate(aggregation.aggregation_queries):
 
             aggregation_output.target_collections = self._fix_collection_names(
                 aggregation_output.target_collections,
@@ -246,18 +251,31 @@ class Aggregate(Tool):
             async with client_manager.connect_to_async_client() as client:
                 try:
                     responses, code_strings = await execute_weaviate_aggregation(
-                        client, aggregation_output
+                        client,
+                        aggregation_output,
+                        property_types={
+                            collection_name: {
+                                schemas[collection_name]["fields"][i]["name"]: schemas[
+                                    collection_name
+                                ]["fields"][i]["type"]
+                                for i in range(len(schemas[collection_name]["fields"]))
+                            }
+                            for collection_name in collection_names
+                        },
+                        vectorised_by_collection=vectorised_by_collection,
+                        schema=schemas,
                     )
+                except QueryError as e:
+                    yield Error(feedback=str(e))
+                    continue
                 except Exception as e:
                     for collection_name in aggregation_output.target_collections:
-                        async for yield_object in self._handle_aggregation_error(
-                            e,
-                            collection_name,
-                            tree_data.user_prompt,
-                            aggregation_output.model_dump(),
-                        ):
-                            yield yield_object
-                    continue  # continue to next aggregation output
+                        if self.logger:
+                            self.logger.exception(
+                                f"Error executing aggregation for {collection_name}: {str(e)}"
+                            )
+                        yield Error(error_message=str(e))
+                    continue  # don't exit, try again for next aggregation output (might not error)
 
             yield Status(
                 f"Aggregated over {', '.join(aggregation_output.target_collections)}"
@@ -276,7 +294,18 @@ class Aggregate(Tool):
                         )
                     )
 
-                objects = [{collection_name: format_aggregation_response(response)}]
+                objects = [
+                    {
+                        "num_items": (
+                            response.total_count
+                            if "total_count" in dir(response)
+                            else None
+                        ),
+                        "collections": [
+                            {collection_name: format_aggregation_response(response)}
+                        ],
+                    }
+                ]
                 metadata = {
                     "collection_name": collection_name,
                     "aggregation_output": aggregation_output.model_dump(),
@@ -289,43 +318,15 @@ class Aggregate(Tool):
 
                 yield Aggregation(objects, metadata)
 
+        # if successful, yield training update
+        yield TrainingUpdate(
+            module_name="aggregate",
+            inputs={
+                **tree_data.to_json(),
+                "available_collections": collection_names,
+                "previous_aggregation_queries": previous_aggregations,
+            },
+            outputs=aggregation.__dict__["_store"],
+        )
         if self.logger:
             self.logger.debug("Aggregation Tool finished!")
-
-
-# async def main():
-#     from elysia.objects import Result, Text, Update
-#     from elysia.tree.tree import Tree
-#     from elysia.util.client import ClientManager
-
-#     # init tree
-#     client_manager = ClientManager()
-#     await client_manager.start_clients()
-#     tree = Tree(
-#         collection_names=["ecommerce", "weather", "weaviate_documentation"], debug=True
-#     )
-#     await tree.async_init(client_manager)
-
-#     tree.tree_data.user_prompt = (
-#         "what is the average price of trousers in the ecommerce collection?"
-#     )
-#     aggregate = Aggregate(verbosity=2)
-#     async for result in aggregate(
-#         base_lm=tree.base_lm,
-#         complex_lm=tree.complex_lm,
-#         inputs={"collection_names": ["ecommerce", "weather", "weaviate_documentation"]},
-#         tree_data=tree.tree_data,
-#         client_manager=client_manager,
-#     ):
-#         if isinstance(result, Result):
-#             print(await result.to_frontend("1", "2", "3"))
-#         elif isinstance(result, Update):
-#             print(await result.to_frontend("2", "3"))
-#         elif isinstance(result, Text):
-#             print(result.text)
-
-
-# if __name__ == "__main__":
-#     import asyncio
-
-#     asyncio.run(main())

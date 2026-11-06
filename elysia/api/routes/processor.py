@@ -1,10 +1,10 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, WebSocket
-from starlette.websockets import WebSocketDisconnect
-
-# API Types
-from elysia.api.api_types import ProcessCollectionData
+from fastapi import APIRouter, Depends
+from fastapi.websockets import WebSocket, WebSocketDisconnect
+from typing import Callable
+import psutil
+import time
 
 # Logging
 from elysia.api.core.log import logger
@@ -17,16 +17,13 @@ from elysia.api.services.user import UserManager
 from elysia.api.utils.websocket import help_websocket
 
 # Preprocessing
-from elysia.preprocess.collection import CollectionPreprocessor
-
-# LM
-from elysia.config import load_base_lm
+from elysia.preprocess.collection import preprocess_async
 
 router = APIRouter()
 
 
 async def process_collection(
-    data: ProcessCollectionData, websocket: WebSocket, user_manager: UserManager
+    data: dict, websocket: WebSocket, user_manager: UserManager
 ):
     logger.debug(f"/process_collection API request received")
     logger.debug(f"User ID: {data['user_id']}")
@@ -35,11 +32,11 @@ async def process_collection(
     user = await user_manager.get_user_local(data["user_id"])
     settings = user["tree_manager"].settings
 
-    preprocessor = CollectionPreprocessor(settings=settings)
-    async for result in preprocessor(
+    async for result in preprocess_async(
         collection_name=data["collection_name"],
         client_manager=user["client_manager"],
         force=True,
+        settings=settings,
     ):
         try:
             logger.debug(

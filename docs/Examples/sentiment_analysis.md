@@ -14,7 +14,7 @@ tree = Tree(branch_initialisation = "one_branch")
 
 ## Custom Tool
 
-Let's use an LLM for sentiment analysis by creating a custom tool Elysia can use. Be sure to follow the (custom tool guide)[Customising/creating_your_own_tools.md] for more information.
+Let's use an LLM for sentiment analysis by creating a custom tool Elysia can use. Be sure to follow the (custom tool guide)[Customising/advanced_tool_construction.md] for more information.
 
 In this case, we want to provide a comprehensive 
 ```python

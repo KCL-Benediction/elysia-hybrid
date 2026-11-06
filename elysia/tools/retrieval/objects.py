@@ -1,19 +1,7 @@
 import uuid
-
 from weaviate.classes.query import Filter, QueryReference
 
 from elysia.objects import Retrieval
-
-# Objects
-from elysia.tools.objects import (
-    BoringGeneric,
-    Conversation,
-    Document,
-    Ecommerce,
-    EpicGeneric,
-    Message,
-    Ticket,
-)
 
 # Client Manager
 from elysia.util.client import ClientManager
@@ -22,124 +10,72 @@ from elysia.util.client import ClientManager
 from elysia.util.parsing import format_dict_to_serialisable
 
 
-class EpicGenericRetrieval(EpicGeneric, Retrieval):
+class MessageRetrieval(Retrieval):
     def __init__(
         self,
         objects: list[dict],
         metadata: dict,
         mapping: dict | None = None,
-    ):
-        # EpicGeneric.__init__(self, objects, metadata, mapping)
-        Retrieval.__init__(
-            self,
-            objects,
-            payload_type="epic_generic",
-            metadata=metadata,
-            mapping=mapping,
-        )
-
-
-class BoringGenericRetrieval(BoringGeneric, Retrieval):
-    def __init__(
-        self,
-        objects: list[dict],
-        metadata: dict,
-        mapping: dict | None = None,
-    ):
-        # BoringGeneric.__init__(self, objects, metadata, mapping)
-        Retrieval.__init__(
-            self,
-            objects,
-            payload_type="boring_generic",
-            metadata=metadata,
-            mapping=mapping,
-        )
-
-
-class EcommerceRetrieval(Ecommerce, Retrieval):
-    def __init__(
-        self,
-        objects: list[dict],
-        metadata: dict,
-        mapping: dict | None = None,
-    ):
-        # Ecommerce.__init__(self, objects, metadata, mapping)
-        Retrieval.__init__(
-            self,
-            objects,
-            payload_type="ecommerce",
-            metadata=metadata,
-            mapping=mapping,
-        )
-
-
-class TicketRetrieval(Ticket, Retrieval):
-    def __init__(
-        self,
-        objects: list[dict],
-        metadata: dict,
-        mapping: dict | None = None,
-    ):
-        # Ticket.__init__(self, objects, metadata, mapping)
-        Retrieval.__init__(
-            self,
-            objects,
-            payload_type="ticket",
-            metadata=metadata,
-            mapping=mapping,
-        )
-
-
-class MessageRetrieval(Message, Retrieval):
-    def __init__(
-        self,
-        objects: list[dict],
-        metadata: dict,
-        mapping: dict | None = None,
-    ):
+        **kwargs,
+    ) -> None:
         for obj in objects:
             obj["relevant"] = False
 
-        # Message.__init__(self, objects, metadata, mapping)
         Retrieval.__init__(
             self,
             objects,
             payload_type="message",
             metadata=metadata,
             mapping=mapping,
-            unmapped_keys=["uuid", "summary", "collection_name", "relevant"],
+            unmapped_keys=[
+                "uuid",
+                "ELYSIA_SUMMARY",
+                "collection_name",
+                "relevant",
+                "_REF_ID",
+            ],
+            **kwargs,
         )
 
 
-class ConversationRetrieval(Conversation, Retrieval):
+class ConversationRetrieval(Retrieval):
     def __init__(
         self,
         objects: list[dict],
         metadata: dict,
         mapping: dict | None = None,
-    ):
-        # Conversation.__init__(self, objects, metadata, mapping)
+        **kwargs,
+    ) -> None:
         Retrieval.__init__(
             self,
             objects,
             payload_type="conversation",
             metadata=metadata,
             mapping=mapping,
-            unmapped_keys=["uuid", "summary", "collection_name", "relevant"],
+            unmapped_keys=[
+                "uuid",
+                "ELYSIA_SUMMARY",
+                "collection_name",
+                "relevant",
+                "_REF_ID",
+            ],
+            **kwargs,
         )
         self.async_init_completed = False
 
-    async def async_init(self, client_manager: ClientManager):
+    async def async_init(self, client_manager: ClientManager) -> None:
         if not self.async_init_completed:
             await self._return_all_messages_in_conversation(client_manager)
 
     async def _fetch_items_in_conversation(
         self,
         conversation_id: str,
+        message_id: int,
+        conversation_id_field_name: str,
+        message_id_field_name: str,
         metadata: dict,
-        message_index: int,
         client_manager: ClientManager,
-    ):
+    ) -> list[dict]:
         """
         Use Weaviate to fetch all messages in a conversation based on the conversation ID.
         """
@@ -150,35 +86,66 @@ class ConversationRetrieval(Conversation, Retrieval):
         async with client_manager.connect_to_async_client() as client:
             collection = client.collections.get(metadata["collection_name"])
             items_in_conversation = await collection.query.fetch_objects(
-                filters=Filter.by_property("conversation_id").equal(conversation_id)
+                filters=Filter.by_property(conversation_id_field_name).equal(
+                    conversation_id
+                )
             )
 
         output = []
         for obj in items_in_conversation.objects:
             output.append(obj.properties)
             output[-1]["uuid"] = str(obj.uuid)
-            if output[-1]["message_index"] == message_index:
+            if output[-1][message_id_field_name] == message_id:
                 output[-1]["relevant"] = True
             else:
                 output[-1]["relevant"] = False
 
         return output
 
-    async def _return_all_messages_in_conversation(self, client_manager: ClientManager):
+    async def _return_all_messages_in_conversation(
+        self, client_manager: ClientManager
+    ) -> list[dict]:
         """
         Return all messages in a conversation based on the response from Weaviate.
         """
 
         returned_objects = []
+        conversations_seen = set()
         for o in self.objects:
+
+            if o[self.mapping["conversation_id"]] in conversations_seen:
+                continue
+
+            conversations_seen.add(o[self.mapping["conversation_id"]])
+
             items_in_conversation = await self._fetch_items_in_conversation(
-                o["conversation_id"], self.metadata, o["message_index"], client_manager
+                o[self.mapping["conversation_id"]],
+                o[self.mapping["message_id"]],
+                self.mapping["conversation_id"],
+                self.mapping["message_id"],
+                self.metadata,
+                client_manager,
             )
-            items_in_conversation.sort(key=lambda x: int(x["message_index"]))
+            # Check if all message_id values can be converted to int for sorting
+            can_sort_as_int = True
+            for x in items_in_conversation:
+                try:
+                    int(x[self.mapping["message_id"]])
+                except (ValueError, TypeError, KeyError):
+                    can_sort_as_int = False
+                    break
+
+            if can_sort_as_int:
+                items_in_conversation.sort(
+                    key=lambda x: int(x[self.mapping["message_id"]])
+                )
+            else:
+                items_in_conversation.sort(key=lambda x: x[self.mapping["message_id"]])
+
             returned_objects.append(
                 {
                     "messages": items_in_conversation,
-                    "conversation_id": o["conversation_id"],
+                    "conversation_id": o[self.mapping["conversation_id"]],
                 }
             )
 
@@ -187,10 +154,10 @@ class ConversationRetrieval(Conversation, Retrieval):
 
         return returned_objects
 
-    def to_json(self, mapping: bool = False):
+    def to_json(self, mapping: bool = False) -> list[dict]:
         assert (
             self.async_init_completed
-        ), "ERROR: ConversationRetrieval not initialized, need to run .async_init(client_manager)"
+        ), "ConversationRetrieval not initialized, need to run .async_init(client_manager)"
 
         if self.mapping is not None and mapping:
             output_objects = []
@@ -226,13 +193,14 @@ class ConversationRetrieval(Conversation, Retrieval):
         return output_objects
 
 
-class DocumentRetrieval(Document, Retrieval):
+class DocumentRetrieval(Retrieval):
     def __init__(
         self,
         objects: list[dict],
         metadata: dict,
         mapping: dict | None = None,
-    ):
+        **kwargs,
+    ) -> None:
         assert (
             "collection_name" in metadata
         ), "collection_name is required for DocumentRetrieval"
@@ -245,7 +213,6 @@ class DocumentRetrieval(Document, Retrieval):
             if "chunk_spans" not in obj:
                 obj["chunk_spans"] = []
 
-        # Document.__init__(self, objects, metadata, mapping)
         Retrieval.__init__(
             self,
             objects,
@@ -254,19 +221,21 @@ class DocumentRetrieval(Document, Retrieval):
             mapping=mapping,
             unmapped_keys=[
                 "uuid",
-                "summary",
+                "ELYSIA_SUMMARY",
                 "collection_name",
                 "chunk_spans",
                 "chunk_uuid",
+                "_REF_ID",
             ],
+            **kwargs,
         )
         self.async_init_completed = False
 
-    async def async_init(self, client_manager: ClientManager):
+    async def async_init(self, client_manager: ClientManager) -> None:
         if not self.async_init_completed:
             await self._get_related_documents(client_manager)
 
-    async def _get_related_documents(self, client_manager: ClientManager):
+    async def _get_related_documents(self, client_manager: ClientManager) -> None:
         """
         Get the related full documents for the chunked documents in the DocumentRetrieval object.
         """
@@ -279,9 +248,6 @@ class DocumentRetrieval(Document, Retrieval):
                     chunked_collection = client.collections.get(chunked_collection_name)
 
                     # re-retrieve the exact same items but with the full document references
-                    # TODO: this is unnecessary, in the first retrieval we should have already retrieved the full documents
-                    # here we just add them to the objects
-                    # TODO when refactoring the query code
                     chunked_response = (
                         await chunked_collection.query.fetch_objects_by_ids(
                             [object["uuid"] for object in self.objects],
@@ -310,28 +276,27 @@ class DocumentRetrieval(Document, Retrieval):
                                         "chunk_spans": [],
                                     }
 
+                                chunk_spans: list[int] = object.properties["chunk_spans"]  # type: ignore
+
                                 # chunk comes from `object` which is the chunk (outer level loop)
                                 full_docs[str(full_document.uuid)][
                                     "chunk_spans"
                                 ].append(
                                     {
-                                        "start": object.properties["chunk_spans"][0],
-                                        "end": object.properties["chunk_spans"][1],
+                                        "start": chunk_spans[0],
+                                        "end": chunk_spans[1],
                                         "uuid": str(object.uuid),
                                     }
                                 )
 
                     self.full_documents = list(full_docs.values())
                 else:
-                    print(
-                        "WARNING: DocumentRetrieval has metadata['chunked'] set to True, but the chunked collection does not exist. Returning chunks only."
-                    )
                     self.full_documents = self.objects
         else:
             self.full_documents = self.objects
         self.async_init_completed = True
 
-    def full_documents_to_json(self, mapping: bool = False):
+    def full_documents_to_json(self, mapping: bool = False) -> list[dict]:
         assert all(
             isinstance(obj, dict) for obj in self.full_documents
         ), "All objects must be dictionaries"
@@ -357,7 +322,9 @@ class DocumentRetrieval(Document, Retrieval):
 
         return output_objects
 
-    async def to_frontend(self, user_id: str, conversation_id: str, query_id: str):
+    async def to_frontend(
+        self, user_id: str, conversation_id: str, query_id: str
+    ) -> dict:
         """
         Needs re-definition of the to_frontend method because the frontend receives full documents,
         whereas the LLM receives the chunks.
@@ -400,17 +367,12 @@ class Aggregation(Retrieval):
         objects: list[dict],
         metadata: dict = {},
         name: str | None = None,
-    ):
+        **kwargs,
+    ) -> None:
         if name is None and "collection_name" in metadata:
             name = metadata["collection_name"]
         elif name is None:
-            name = "generic"
-
-        # TODO: talk to edward about adding num_items back
-        # for obj in objects:
-        #     for collection_name, collection_data in obj.items():
-        #         if "num_items" in collection_data.keys():
-        #             del collection_data["num_items"]
+            name = "default"
 
         Retrieval.__init__(
             self,
@@ -418,21 +380,24 @@ class Aggregation(Retrieval):
             payload_type="aggregation",
             metadata=metadata,
             name=name,
+            **kwargs,
         )
 
-    def llm_parse(self):
+    def llm_parse(self) -> str:
         out = ""
         if "collection_name" in self.metadata:
             out += f"\nAggregated collection: '{self.metadata['collection_name']}'"
 
             count = {}
             if len(self.objects) > 0:
-                for metric in self.objects[0][self.metadata["collection_name"]]:
+                for metric in self.objects[0]["collections"][0][
+                    self.metadata["collection_name"]
+                ]:
                     if metric != "ELYSIA_NUM_ITEMS":
                         num_values = len(
-                            self.objects[0][self.metadata["collection_name"]][metric][
-                                "values"
-                            ]
+                            self.objects[0]["collections"][0][
+                                self.metadata["collection_name"]
+                            ][metric]["values"]
                         )
                         count[metric] = num_values
 
@@ -456,20 +421,6 @@ class Aggregation(Retrieval):
                 out += f"The user prompt was: '{self.metadata['impossible']}', which the aggregation model deemed impossible to complete."
                 if "impossible_reasoning" in self.metadata:
                     out += f"\nReasoning for impossibility: {self.metadata['impossible_reasoning']}"
-            if "assertion_error_message" in self.metadata:
-                out += f"\nWhen aggregating this collection ({self.metadata['collection_name']}), the following assertion error occurred:"
-                out += f"\n<assertion_error_message>\n  {self.metadata['assertion_error_message']}\n</assertion_error_message>\n"
-                out += f" You should judge whether this error is avoidable, and choose your task accordingly."
-                out += f" An assertion error is _usually_ fixable by changing the aggregation code (either now if that is your task, or in the future if you are not tasked with writing code for aggregating a collection currently)."
-                out += f" For example, if you are choosing a function to use (you are making a decision), you are not writing the aggregation code, so do not try to fix it."
-                out += f" If you are writing the aggregation code, you should try to fix it, based on this error message."
-            if "error_message" in self.metadata:
-                out += f"\nThe following GENERIC error occurred when querying this collection ({self.metadata['collection_name']}):"
-                out += f" \n<error_message>\n  {self.metadata['error_message']}\n</error_message>\n"
-                out += f" You should judge whether this error is avoidable, and choose your task accordingly."
-                out += f" These kind of errors are usually due to a problem outside of your control, such as a problem with the database or the internet connection."
-                out += f" You should probably not repeat this task/try to fix this error, but instead communicate apologies to the user and suggest alternatives based on this error."
-                out += f" Unless this is a Weaviate client error (such as a timeout/GRPC error), then you should try to repeat this task as it likely won't happen again."
             if "aggregation_output" in self.metadata:
                 out += f"\nThe aggregation query used was:\n{self.metadata['aggregation_output']}"
         return out

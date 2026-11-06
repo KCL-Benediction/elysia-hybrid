@@ -8,6 +8,21 @@ from weaviate.types import UUID
 
 from elysia.util.parsing import format_datetime
 
+data_mapping = {
+    "text": DataType.TEXT,
+    "int": DataType.INT,
+    "number": DataType.NUMBER,
+    "bool": DataType.BOOL,
+    "date": DataType.DATE,
+    "object": DataType.OBJECT,
+    "text[]": DataType.TEXT_ARRAY,
+    "int[]": DataType.INT_ARRAY,
+    "number[]": DataType.NUMBER_ARRAY,
+    "bool[]": DataType.BOOL_ARRAY,
+    "date[]": DataType.DATE_ARRAY,
+    "object[]": DataType.OBJECT_ARRAY,
+}
+
 
 async def retrieve_all_collection_names(client):
     all_collections = await client.collections.list_all()
@@ -32,39 +47,11 @@ async def async_get_collection_data_types(client, collection_name: str):
 
 def get_collection_weaviate_data_types(client, collection_name: str):
     data_types = get_collection_data_types(client, collection_name)
-    data_mapping = {
-        "text": DataType.TEXT,
-        "int": DataType.INT,
-        "number": DataType.NUMBER,
-        "bool": DataType.BOOL,
-        "date": DataType.DATE,
-        "object": DataType.OBJECT,
-        "text[]": DataType.TEXT_ARRAY,
-        "int[]": DataType.INT_ARRAY,
-        "number[]": DataType.NUMBER_ARRAY,
-        "bool[]": DataType.BOOL_ARRAY,
-        "date[]": DataType.DATE_ARRAY,
-        "object[]": DataType.OBJECT_ARRAY,
-    }
     return {k: data_mapping[v] for k, v in data_types.items()}
 
 
 async def async_get_collection_weaviate_data_types(client, collection_name: str):
     data_types = await async_get_collection_data_types(client, collection_name)
-    data_mapping = {
-        "text": DataType.TEXT,
-        "int": DataType.INT,
-        "number": DataType.NUMBER,
-        "bool": DataType.BOOL,
-        "date": DataType.DATE,
-        "object": DataType.OBJECT,
-        "text[]": DataType.TEXT_ARRAY,
-        "int[]": DataType.INT_ARRAY,
-        "number[]": DataType.NUMBER_ARRAY,
-        "bool[]": DataType.BOOL_ARRAY,
-        "date[]": DataType.DATE_ARRAY,
-        "object[]": DataType.OBJECT_ARRAY,
-    }
     return {k: data_mapping[v] for k, v in data_types.items()}
 
 
@@ -96,12 +83,6 @@ def convert_weaviate_list(list_object: list):
 
 def convert_weaviate_object(dict_object: dict):
     for key, value in dict_object.items():
-        if key == "date":
-            x = 1
-
-        # if isinstance(value, str) and value.startswith("[") and value.endswith("]"):
-        #     print(f"key: {key}, value: {value}")
-        #     value = eval(value, {}, {})
 
         if isinstance(value, datetime.datetime):
             dict_object[key] = format_datetime(value)
@@ -127,6 +108,7 @@ def convert_weaviate_object(dict_object: dict):
 async def paginated_collection(
     client,
     collection_name: str,
+    query: str = "",
     sort_on: str | None = None,
     ascending: bool = False,
     filter_config: dict[
@@ -144,7 +126,14 @@ async def paginated_collection(
     filter_values = [f["value"] for f in filters_list]
 
     if len(filters) == 0:
-        if sort_on is not None:
+
+        if query != "":
+            response = await collection.query.bm25(
+                query=query,
+                limit=page_size,
+                offset=page_size * (page_number - 1),
+            )
+        elif sort_on is not None:
             response = await collection.query.fetch_objects(
                 sort=Sort.by_property(name=sort_on, ascending=ascending),
                 limit=page_size,
@@ -187,24 +176,39 @@ async def paginated_collection(
                 raise ValueError(f"Invalid filter operator: {filter_operator}")
 
         if filter_type == "all":
-            all_filters = Filter.all_of(all_filters)
+            main_filter = Filter.all_of(all_filters)
         elif filter_type == "any":
-            all_filters = Filter.any_of(all_filters)
+            main_filter = Filter.any_of(all_filters)
         else:
             raise ValueError(f"Invalid filter type: {filter_type}")
 
-        if sort_on is not None:
+        if query != "":
+            response = await collection.query.bm25(
+                query=query,
+                filters=main_filter,
+                limit=page_size,
+                offset=page_size * (page_number - 1),
+            )
+        elif sort_on is not None:
             response = await collection.query.fetch_objects(
-                filters=all_filters,
+                filters=main_filter,
                 sort=Sort.by_property(name=sort_on, ascending=ascending),
                 limit=page_size,
                 offset=page_size * (page_number - 1),
             )
         else:
             response = await collection.query.fetch_objects(
-                filters=all_filters,
+                filters=main_filter,
                 limit=page_size,
                 offset=page_size * (page_number - 1),
             )
 
-    return [convert_weaviate_object(o.properties) for o in response.objects]
+    objects = [
+        {
+            **convert_weaviate_object(o.properties),
+            "uuid": str(o.uuid),
+        }
+        for o in response.objects
+    ]
+
+    return objects

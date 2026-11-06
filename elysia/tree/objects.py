@@ -1,11 +1,15 @@
-from typing import Any, List
+from typing import Any
 from logging import Logger
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from elysia.config import Settings
+from elysia.config import settings as environment_settings
 from elysia.objects import Result
 from elysia.util.client import ClientManager
 from elysia.util.parsing import format_dict_to_serialisable, remove_whitespace
+from copy import deepcopy
+from weaviate.classes.query import Filter
 
 
 class Environment:
@@ -59,14 +63,18 @@ class Environment:
 
     def __init__(
         self,
-        environment: dict[str, dict[str, List[Result]]] = {},
+        environment: dict[str, dict[str, Any]] | None = None,
         self_info: bool = True,
+        hidden_environment: dict[str, Any] = {},
     ):
+        if environment is None:
+            environment = {}
         self.environment = environment
-        self.hidden_environment = {}
+        self.hidden_environment = hidden_environment
+        self.self_info = self_info
         if self_info:
             self.environment["SelfInfo"] = {}
-            self.environment["SelfInfo"]["generic"] = [
+            self.environment["SelfInfo"]["info"] = [
                 {
                     "name": "Elysia",
                     "description": "An agentic RAG service in Weaviate.",
@@ -114,7 +122,7 @@ class Environment:
                     break
         return empty
 
-    def add(self, result: Result, tool_name: str):
+    def add(self, tool_name: str, result: Result, include_duplicates: bool = False):
         """
         Adds a result to the environment.
         Is called automatically by the tree when a result is returned from an agent.
@@ -124,12 +132,15 @@ class Environment:
         If you want to add something manually, you can use the `add_objects` method.
 
         Each item is added with a `_REF_ID` attribute, which is a unique identifier used to identify the object in the environment.
-        If duplicate objects are detected, they are added with a special `REPEAT_ID` entry detailing that they are a duplicate,
+        If duplicate objects are detected, they are added with a duplicate `_REF_ID` entry detailing that they are a duplicate,
         as well as the `_REF_ID` of the original object.
 
         Args:
-            result (Result): The result to add to the environment.
             tool_name (str): The name of the tool called that the result belongs to.
+            result (Result): The result to add to the environment.
+            include_duplicates (bool): Optional. Whether to include duplicate objects in the environment.
+                Defaults to `False`, which still adds the duplicate object, but with a duplicate `_REF_ID` entry (and no repeating properties).
+                If `True`, the duplicate object is added with a new `_REF_ID` entry, and the repeated properties are added to the object.
         """
         objects = result.to_json()
         name = result.name
@@ -137,10 +148,15 @@ class Environment:
         if tool_name not in self.environment:
             self.environment[tool_name] = {}
 
-        self.add_objects(tool_name, name, objects, metadata)
+        self.add_objects(tool_name, name, objects, metadata, include_duplicates)
 
     def add_objects(
-        self, tool_name: str, name: str, objects: list[dict], metadata: dict = {}
+        self,
+        tool_name: str,
+        name: str,
+        objects: list[dict],
+        metadata: dict = {},
+        include_duplicates: bool = False,
     ):
         """
         Adds an object to the environment.
@@ -148,7 +164,7 @@ class Environment:
         This is useful if you want to add an object to the environment manually that doesn't come from a Result object.
 
         Each item is added with a `_REF_ID` attribute, which is a unique identifier used to identify the object in the environment.
-        If duplicate objects are detected, they are added with a special `REPEAT_ID` entry detailing that they are a duplicate,
+        If duplicate objects are detected, they are added with a duplicate `_REF_ID` entry detailing that they are a duplicate,
         as well as the `_REF_ID` of the original object.
 
         Args:
@@ -157,6 +173,10 @@ class Environment:
             objects (list[dict]): The objects to add to the environment.
             metadata (dict): Optional. The metadata of the objects to add to the environment.
                 Defaults to an empty dictionary.
+            include_duplicates (bool): Optional. Whether to include duplicate objects in the environment.
+                Defaults to `False`, which still adds the duplicate object, but with a duplicate `_REF_ID` entry (and no repeating properties).
+                If `True`, the duplicate object is added with a new `_REF_ID` entry, and the repeated properties are added to the object.
+
         """
         if tool_name not in self.environment:
             self.environment[tool_name] = {}
@@ -183,14 +203,14 @@ class Environment:
                         _REF_ID = env_item["objects"][where_obj]["_REF_ID"]
                         break
 
-                if obj_found:
+                if obj_found and not include_duplicates:
                     self.environment[tool_name][name][-1]["objects"].append(
                         {
                             "object_info": f"[repeat]",
-                            "REPEAT_ID": _REF_ID,
+                            "_REF_ID": _REF_ID,
                         }
                     )
-                else:
+                elif "_REF_ID" not in obj:
                     _REF_ID = f"{tool_name}_{name}_{len(self.environment[tool_name][name])}_{i}"
                     self.environment[tool_name][name][-1]["objects"].append(
                         {
@@ -198,6 +218,8 @@ class Environment:
                             **obj,
                         }
                     )
+                else:
+                    self.environment[tool_name][name][-1]["objects"].append(obj)
 
     def remove(self, tool_name: str, name: str, index: int | None = None):
         """
@@ -268,9 +290,9 @@ class Environment:
                 If an integer, the object at the given index is returned.
 
         Returns:
-            list[dict]: The list of objects for the given `tool_name` and `name`, if `index` is `None`.
-            dict: The object at the given `index` for the given `tool_name` and `name`, if `index` is an integer.
-            None if the `tool_name` or `name` is not found in the environment.
+            (list[dict]): if `index` is `None` - The list of objects for the given `tool_name` and `name`.
+            (dict): if `index` is an integer - The object at the given `index` for the given `tool_name` and `name`.
+            (None): If the `tool_name` or `name` is not found in the environment.
         """
 
         if tool_name not in self.environment:
@@ -283,12 +305,41 @@ class Environment:
         else:
             return self.environment[tool_name][name][index]
 
-    def to_json(self):
+    def to_json(self, remove_unserialisable: bool = False):
         """
         Converts the environment to a JSON serialisable format.
         Used to access specific objects from the environment.
         """
-        return self.environment
+
+        env_copy = deepcopy(self.environment)
+        hidden_env_copy = deepcopy(self.hidden_environment)
+
+        # Check if environment and hidden_environment are JSON serialisable
+        for tool_name in env_copy:
+            if tool_name != "SelfInfo":
+                for name in self.environment[tool_name]:
+                    for obj_metadata in self.environment[tool_name][name]:
+                        format_dict_to_serialisable(
+                            obj_metadata["metadata"], remove_unserialisable
+                        )
+                        for obj in obj_metadata["objects"]:
+                            format_dict_to_serialisable(obj, remove_unserialisable)
+
+        format_dict_to_serialisable(hidden_env_copy, remove_unserialisable)
+
+        return {
+            "environment": env_copy,
+            "hidden_environment": hidden_env_copy,
+            "self_info": self.self_info,
+        }
+
+    @classmethod
+    def from_json(cls, json_data: dict):
+        return cls(
+            environment=json_data["environment"],
+            hidden_environment=json_data["hidden_environment"],
+            self_info=json_data["self_info"],
+        )
 
 
 def datetime_reference():
@@ -334,9 +385,14 @@ class CollectionData:
     (Such as via the `output_full_metadata` method.)
     """
 
-    def __init__(self, collection_names: list[str], logger: Logger | None = None):
+    def __init__(
+        self,
+        collection_names: list[str],
+        metadata: dict[str, Any] = {},
+        logger: Logger | None = None,
+    ):
         self.collection_names = collection_names
-        self.metadata = {}
+        self.metadata = metadata
         self.logger = logger
 
     async def set_collection_names(
@@ -353,25 +409,45 @@ class CollectionData:
         self.removed_collections = []
         self.incorrect_collections = []
 
+        metadata_name = "ELYSIA_METADATA__"
+
         async with client_manager.connect_to_async_client() as client:
-            for collection_name in collections_to_get:
-                metadata_name = f"ELYSIA_METADATA_{collection_name.lower()}__"
+            # check if the metadata collection exists
+            if not await client.collections.exists(metadata_name):
+                self.removed_collections.extend(collections_to_get)
+            else:
+                metadata_collection = client.collections.get(metadata_name)
+                filters = (
+                    Filter.any_of(
+                        [
+                            Filter.by_property("name").equal(collection_name)
+                            for collection_name in collections_to_get
+                        ]
+                    )
+                    if len(collections_to_get) >= 1
+                    else None
+                )
+                metadata = await metadata_collection.query.fetch_objects(
+                    filters=filters,
+                    limit=9999,
+                )
+                metadata_map = {
+                    metadata_obj.properties["name"]: metadata_obj.properties
+                    for metadata_obj in metadata.objects
+                }
 
-                # check if the collection itself exists
-                if not await client.collections.exists(collection_name):
-                    self.incorrect_collections.append(collection_name)
+                for collection_name in collections_to_get:
 
-                # check if the metadata collection exists
-                elif await client.collections.exists(metadata_name):
-                    metadata_collection = client.collections.get(metadata_name)
-                    metadata = await metadata_collection.query.fetch_objects(limit=1)
-                    properties = metadata.objects[0].properties
-                    format_dict_to_serialisable(properties)
-                    temp_metadata[collection_name] = properties
+                    if not await client.collections.exists(collection_name):
+                        self.incorrect_collections.append(collection_name)
+                        continue
 
-                # if the metadata collection does not exist, it is not preprocessed
-                else:
-                    self.removed_collections.append(collection_name)
+                    if collection_name not in metadata_map:
+                        self.removed_collections.append(collection_name)
+                    else:
+                        properties = metadata_map[collection_name]
+                        format_dict_to_serialisable(properties)  # type: ignore
+                        temp_metadata[collection_name] = properties
 
         if len(self.removed_collections) > 0 and self.logger:
             self.logger.warning(
@@ -451,6 +527,20 @@ class CollectionData:
             for collection_name in self.collection_names
         }
 
+    def to_json(self):
+        return {
+            "collection_names": self.collection_names,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_json(cls, json_data: dict, logger: Logger | None = None):
+        return cls(
+            collection_names=json_data["collection_names"],
+            metadata=json_data["metadata"],
+            logger=logger,
+        )
+
 
 class TreeData:
     """
@@ -484,6 +574,7 @@ class TreeData:
         This is separate from the environment, as it separates what tasks were completed in each prompt in which order.
     - num_trees_completed (int): The current level of the decision tree, how many iterations have been completed so far.
     - recursion_limit (int): The maximum number of iterations allowed in the decision tree.
+    - errors (dict): A dictionary of self-healing errors that have occurred in the tree. Keyed by the function name that caused the error.
 
     In general, you should not initialise this class directly.
     But you can access the data in this class to access the relevant data from the tree (in e.g. tool construction/usage).
@@ -493,22 +584,49 @@ class TreeData:
         self,
         collection_data: CollectionData,
         atlas: Atlas,
-        user_prompt: str = "",
-        conversation_history: list[dict] = [],
-        environment: Environment = Environment(),
-        hidden_environment: Environment = Environment(self_info=False),
-        tasks_completed: list[dict] = [],
-        num_trees_completed: int = 0,
-        recursion_limit: int = 3,
+        user_prompt: str | None = None,
+        conversation_history: list[dict] | None = None,
+        environment: Environment | None = None,
+        tasks_completed: list[dict] | None = None,
+        num_trees_completed: int | None = None,
+        recursion_limit: int | None = None,
+        settings: Settings | None = None,
     ):
+        if settings is None:
+            self.settings = environment_settings
+        else:
+            self.settings = settings
+
         # -- Base Data --
-        self.user_prompt = user_prompt
-        self.conversation_history = conversation_history
-        self.environment = environment
-        self.hidden_environment = hidden_environment
-        self.tasks_completed = tasks_completed
-        self.num_trees_completed = num_trees_completed
-        self.recursion_limit = recursion_limit
+        if user_prompt is None:
+            self.user_prompt = ""
+        else:
+            self.user_prompt = user_prompt
+
+        if conversation_history is None:
+            self.conversation_history = []
+        else:
+            self.conversation_history = conversation_history
+
+        if environment is None:
+            self.environment = Environment()
+        else:
+            self.environment = environment
+
+        if tasks_completed is None:
+            self.tasks_completed = []
+        else:
+            self.tasks_completed = tasks_completed
+
+        if num_trees_completed is None:
+            self.num_trees_completed = 0
+        else:
+            self.num_trees_completed = num_trees_completed
+
+        if recursion_limit is None:
+            self.recursion_limit = 3
+        else:
+            self.recursion_limit = recursion_limit
 
         # -- Atlas --
         self.atlas = atlas
@@ -517,8 +635,9 @@ class TreeData:
         self.collection_data = collection_data
         self.collection_names = []
 
-    def to_json(self):
-        return {k: v for k, v in self.__dict__.items()}
+        # -- Errors --
+        self.errors: dict[str, list[str]] = {}
+        self.current_task = None
 
     def set_property(self, property: str, value: Any):
         self.__dict__[property] = value
@@ -622,6 +741,21 @@ class TreeData:
                     self.tasks_completed[-1]["task"][task_i], kwarg, kwargs[kwarg]
                 )
 
+    def set_current_task(self, task: str):
+        self.current_task = task
+
+    def get_errors(self):
+        if self.current_task == "elysia_decision_node":
+            return self.errors
+        elif self.current_task is None or self.current_task not in self.errors:
+            return []
+        else:
+            return self.errors[self.current_task]
+
+    def clear_error(self, task: str):
+        if task in self.errors:
+            self.errors[task] = []
+
     def tasks_completed_string(self):
         """
         Output a nicely formatted string of the tasks completed so far, designed to be used in the LLM prompt.
@@ -629,7 +763,7 @@ class TreeData:
         You can use this if you are interfacing with LLMs in tools, to help it understand the context of the tasks completed so far.
 
         Returns:
-            str: A separated and formatted string of the tasks completed so far in an LLM-parseable format.
+            (str): A separated and formatted string of the tasks completed so far in an LLM-parseable format.
         """
         out = ""
         for j, task_prompt in enumerate(self.tasks_completed):
@@ -640,9 +774,10 @@ class TreeData:
                 out += f"<task_{i+1}>\n"
 
                 if "action" in task and task["action"]:
-                    out += f"Completed action: {task['task']}\n"
+                    out += f"Chosen action: {task['task']} (this does not mean it has been completed, only that it was chosen) "
+                    out += "(Use the environment to judge if a task is completed)\n"
                 else:
-                    out += f"Chosen subcategory: {task['task']}\n"
+                    out += f"Chosen subcategory: {task['task']} (this action has not been completed, this is only a subcategory)\n"
 
                 for key in task:
                     if key != "task" and key != "action":
@@ -684,19 +819,19 @@ class TreeData:
                 ```python
                 {
                     # summary statistics of each field in the collection
-                    "fields": dict = {
+                    "fields": list = [
                         field_name_1: dict = {
                             "description": str,
                             "range": list[float],
                             "type": str,
-                            "groups": list[str],
+                            "groups": dict[str, str],
                             "mean": float
                         },
                         field_name_2: dict = {
                             ... # same fields as above
                         },
                         ...
-                    },
+                    ],
 
                     # mapping_1, mapping_2 etc refer to frontend-specific types that the AI has deemed appropriate for this data
                     # then the dict is to map the frontend fields to the data fields
@@ -722,11 +857,15 @@ class TreeData:
                     "name": str,
 
                     # what named vectors are available and their properties (if any)
-                    "named_vectors": dict = {
-                        "enabled": bool,
-                        "source_properties": list,
-                        "description": str # defaults to empty
-                    },
+                    "named_vectors": list = [
+                        {
+                            "name": str,
+                            "enabled": bool,
+                            "source_properties": list,
+                            "description": str # defaults to empty
+                        },
+                        ...
+                    ],
 
                     # some config settings relevant for queries
                     "index_properties": {
@@ -748,13 +887,13 @@ class TreeData:
             collection_names, with_mappings
         )
 
-    def output_collection_return_types(self):
+    def output_collection_return_types(self) -> dict[str, list[str]]:
         """
         Outputs the return types for the collections in the tree data.
         Essentially, this is a list of the keys that can be used to map the objects to the frontend.
 
         Returns:
-            dict: A dictionary of collection names to their return types.
+            (dict): A dictionary of collection names to their return types.
                 ```python
                 {
                     collection_name_1: list[str],
@@ -765,16 +904,39 @@ class TreeData:
                 Each of these lists is a list of the keys that can be used to map the objects to the frontend.
         """
         collection_return_types = self.collection_data.output_mapping_lists()
-        return {
+        out = {
             collection_name: collection_return_types[collection_name]
             for collection_name in self.collection_names
         }
+        return out
 
-    def to_json(self):
-        return {
-            "user_prompt": self.user_prompt,
-            "conversation_history": self.conversation_history,
-            "environment": self.environment.to_json(),
-            "tasks_completed": self.tasks_completed,
-            "num_trees_completed": self.num_trees_completed,
+    def to_json(self, remove_unserialisable: bool = False):
+        out = {
+            k: v
+            for k, v in self.__dict__.items()
+            if k not in ["collection_data", "atlas", "environment", "settings"]
         }
+        out["collection_data"] = self.collection_data.to_json()
+        out["atlas"] = self.atlas.model_dump()
+        out["environment"] = self.environment.to_json(remove_unserialisable)
+        out["settings"] = self.settings.to_json()
+        return out
+
+    @classmethod
+    def from_json(cls, json_data: dict):
+        settings = Settings.from_json(json_data["settings"])
+        logger = settings.logger
+        collection_data = CollectionData.from_json(json_data["collection_data"], logger)
+        atlas = Atlas.model_validate(json_data["atlas"])
+        environment = Environment.from_json(json_data["environment"])
+
+        tree_data = cls(
+            collection_data=collection_data,
+            atlas=atlas,
+            environment=environment,
+            settings=settings,
+        )
+        for item in json_data:
+            if item not in ["collection_data", "atlas", "environment", "settings"]:
+                tree_data.set_property(item, json_data[item])
+        return tree_data

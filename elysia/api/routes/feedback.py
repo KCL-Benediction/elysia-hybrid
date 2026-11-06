@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse
 
 from elysia.api.api_types import (
     AddFeedbackData,
-    FeedbackMetadataData,
     RemoveFeedbackData,
 )
 from elysia.api.dependencies.common import get_user_manager
@@ -14,13 +13,12 @@ from elysia.api.utils.feedback import (
     remove_feedback,
 )
 from elysia.api.core.log import logger
+from elysia.util.client import ClientManager
 
 router = APIRouter()
 
-# TODO: feedback is based on individual users now, not the auth client manager, so these are broken
 
-
-@router.post("/add_feedback")
+@router.post("/add")
 async def run_add_feedback(
     data: AddFeedbackData, user_manager: UserManager = Depends(get_user_manager)
 ):
@@ -31,8 +29,10 @@ async def run_add_feedback(
     logger.debug(f"Feedback: {data.feedback}")
 
     tree = await user_manager.get_tree(data.user_id, data.conversation_id)
+    user = user_manager.users[data.user_id]
+    client_manager: ClientManager = user["client_manager"]
 
-    async with user_manager.auth_client_manager.connect_to_async_client() as client:
+    async with client_manager.connect_to_async_client() as client:
         try:
             await create_feedback(
                 data.user_id,
@@ -48,11 +48,19 @@ async def run_add_feedback(
     return JSONResponse(content={"error": ""}, status_code=200)
 
 
-@router.post("/remove_feedback")
+@router.post("/remove")
 async def run_remove_feedback(
     data: RemoveFeedbackData, user_manager: UserManager = Depends(get_user_manager)
 ):
-    async with user_manager.auth_client_manager.connect_to_async_client() as client:
+    logger.debug(f"/remove_feedback API request received")
+    logger.debug(f"User ID: {data.user_id}")
+    logger.debug(f"Conversation ID: {data.conversation_id}")
+    logger.debug(f"Query ID: {data.query_id}")
+
+    user = user_manager.users[data.user_id]
+    client_manager: ClientManager = user["client_manager"]
+
+    async with client_manager.connect_to_async_client() as client:
         try:
             await remove_feedback(
                 data.user_id, data.conversation_id, data.query_id, client
@@ -62,11 +70,23 @@ async def run_remove_feedback(
             return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
-@router.post("/feedback_metadata")
+@router.get("/metadata/{user_id}")
 async def run_feedback_metadata(
-    data: FeedbackMetadataData, user_manager: UserManager = Depends(get_user_manager)
+    user_id: str, user_manager: UserManager = Depends(get_user_manager)
 ):
-    async with user_manager.auth_client_manager.connect_to_async_client() as client:
-        return JSONResponse(
-            content=await feedback_metadata(client, data.user_id), status_code=200
-        )
+    logger.debug(f"/feedback_metadata API request received")
+    logger.debug(f"User ID: {user_id}")
+
+    user = user_manager.users[user_id]
+    client_manager: ClientManager = user["client_manager"]
+
+    async with client_manager.connect_to_async_client() as client:
+        metadata = await feedback_metadata(client, user_id)
+
+    return JSONResponse(
+        content={
+            "error": "",
+            **metadata,
+        },
+        status_code=200,
+    )

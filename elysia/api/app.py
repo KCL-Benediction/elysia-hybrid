@@ -1,4 +1,3 @@
-import gc
 import os
 from contextlib import asynccontextmanager
 
@@ -14,22 +13,21 @@ from elysia.api.dependencies.common import get_user_manager
 from elysia.api.middleware.error_handlers import register_error_handlers
 from elysia.api.routes import (
     collections,
-    config,
     feedback,
     init,
     processor,
     query,
+    user_config,
+    tree_config,
     utils,
+    tools,
+    db,
 )
 from elysia.api.services.user import UserManager
 from elysia.api.utils.resources import print_resources
 
 
 from pathlib import Path
-
-
-async def perform_garbage_collection():
-    gc.collect(generation=2)
 
 
 async def check_timeouts():
@@ -52,10 +50,9 @@ async def lifespan(app: FastAPI):
     user_manager = get_user_manager()
 
     scheduler = AsyncIOScheduler()
-    set_log_level("DEBUG")  # TODO: change to WARNING if in prod
+    set_log_level("INFO")
 
     # use prime numbers for intervals so they don't overlap
-    scheduler.add_job(perform_garbage_collection, "interval", seconds=23)
     scheduler.add_job(check_timeouts, "interval", seconds=29)
     scheduler.add_job(check_restart_clients, "interval", seconds=31)
     scheduler.add_job(output_resources, "interval", seconds=1103)
@@ -87,9 +84,12 @@ app.include_router(init.router, prefix="/init", tags=["init"])
 app.include_router(query.router, prefix="/ws", tags=["websockets"])
 app.include_router(processor.router, prefix="/ws", tags=["websockets"])
 app.include_router(collections.router, prefix="/collections", tags=["collections"])
-app.include_router(config.router, prefix="/config", tags=["config"])
+app.include_router(user_config.router, prefix="/user/config", tags=["user config"])
+app.include_router(tree_config.router, prefix="/tree/config", tags=["tree config"])
 app.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 app.include_router(utils.router, prefix="/util", tags=["utilities"])
+app.include_router(tools.router, prefix="/tools", tags=["tools"])
+app.include_router(db.router, prefix="/db", tags=["db"])
 
 
 # Health check endpoint (kept in main app.py due to its simplicity)
@@ -101,20 +101,23 @@ async def health_check():
 
 
 # Mount the app from static files
-# BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
 
-# # Serve the assets (JS, CSS, images, etc.)
-# app.mount(
-#     "/static/_next",
-#     StaticFiles(directory=BASE_DIR / "static/_next"),
-#     name="next-assets",
-# )
+# Serve NextJS _next assets at root level (this is crucial!)
+app.mount(
+    "/_next",
+    StaticFiles(directory=BASE_DIR / "static/_next"),
+    name="next-assets",
+)
 
-# # Serve the main page and other static files
-# app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="app")
+# Serve other static files
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="app")
 
 
-# @app.get("/")
-# @app.head("/")
-# async def serve_frontend():
-#     return FileResponse(os.path.join(BASE_DIR, "static/index.html"))
+@app.get("/")
+@app.head("/")
+async def serve_frontend():
+    if os.path.exists(os.path.join(BASE_DIR, "static/index.html")):
+        return FileResponse(os.path.join(BASE_DIR, "static/index.html"))
+    else:
+        return None

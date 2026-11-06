@@ -2,18 +2,18 @@ import asyncio
 import time
 
 import psutil
-from fastapi import Request, WebSocket
-from fastapi.dependencies.utils import solve_dependencies
+from typing import Callable
+from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 # Logging
 from elysia.api.core.log import logger
 
 # Objects
-from elysia.objects import Error
+from elysia.api.utils.default_payloads import error_payload
 
 
-async def help_websocket(websocket: WebSocket, ws_route: callable):
+async def help_websocket(websocket: WebSocket, ws_route: Callable):
     memory_process = psutil.Process()
     # initial_memory = memory_process.memory_info().rss
     try:
@@ -55,9 +55,8 @@ async def help_websocket(websocket: WebSocket, ws_route: callable):
                             continue
 
                 except Exception as e:
-                    error = Error(text=str(e))
-                    error_payload = await error.to_frontend("", "")
-                    await websocket.send_json(error_payload)
+                    error = error_payload(text=str(e), conversation_id="", query_id="")
+                    await websocket.send_json(error)
                     logger.error(f"Error in websocket communication: {str(e)}")
 
                 # logger.info(f"Memory usage after receiving: {psutil.Process().memory_info().rss / 1024 / 1024}MB")
@@ -80,14 +79,25 @@ async def help_websocket(websocket: WebSocket, ws_route: callable):
             except Exception as e:
                 logger.error(f"Error in WebSocket: {str(e)}")
                 try:
-                    if data and "conversation_id" in data:
-                        error = Error(text=str(e))
-                        error_payload = await error.to_frontend(data["conversation_id"])
-                        await websocket.send_json(error_payload)
+                    if data and "conversation_id" in data and "query_id" in data:
+                        error = error_payload(
+                            text=str(e),
+                            conversation_id=data["conversation_id"],
+                            query_id=data["query_id"],
+                        )
+                        await websocket.send_json(error)
+                    elif data and "conversation_id" in data:
+                        error = error_payload(
+                            text=str(e),
+                            conversation_id=data["conversation_id"],
+                            query_id="",
+                        )
+                        await websocket.send_json(error)
                     else:
-                        error = Error(text=str(e))
-                        error_payload = await error.to_frontend("")
-                        await websocket.send_json(error_payload)
+                        error = error_payload(
+                            text=str(e), conversation_id="", query_id=""
+                        )
+                        await websocket.send_json(error)
 
                 except RuntimeError:
                     logger.warning(

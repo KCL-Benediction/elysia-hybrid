@@ -1,16 +1,20 @@
 import asyncio
-
+import inspect
 import spacy
-from tqdm.auto import tqdm
+
 from weaviate.classes.config import Configure, DataType, Property, ReferenceProperty
 from weaviate.collections.classes.data import DataObject, DataReference
+from weaviate.collections import CollectionAsync
+from weaviate.collections.classes.internal import Object, QueryReturn
+from weaviate.collections.classes.config_vectorizers import _Vectorizer
+from weaviate.collections.classes.config_named_vectors import _NamedVectors
 from weaviate.exceptions import WeaviateInvalidInputError
 from weaviate.util import generate_uuid5
+from weaviate.client import WeaviateAsyncClient
 
 from elysia.util.client import ClientManager
 from elysia.util.collection import (
     async_get_collection_weaviate_data_types,
-    get_collection_weaviate_data_types,
 )
 
 
@@ -40,7 +44,7 @@ class Chunker:
         chunking_strategy: str = "fixed",
         num_tokens: int = 256,
         num_sentences: int = 5,
-    ):
+    ) -> None:
         self.chunking_strategy = chunking_strategy
         assert chunking_strategy in ["fixed", "sentences"]
 
@@ -49,10 +53,15 @@ class Chunker:
         self.num_tokens = num_tokens
         self.num_sentences = num_sentences
 
-    def count_tokens(self, document):
+    def count_tokens(self, document: str) -> int:
         return len(self.nlp(document))
 
-    def chunk_by_sentences(self, document, num_sentences=None, overlap_sentences=1):
+    def chunk_by_sentences(
+        self,
+        document: str,
+        num_sentences: int | None = None,
+        overlap_sentences: int = 1,
+    ) -> tuple[list[str], list[tuple[int, int]]]:
         """
         Given a document (string), return the sentences as chunks and span annotations (start and end indices of chunks).
         Using spaCy to do sentence chunking.
@@ -92,7 +101,9 @@ class Chunker:
 
         return chunks, span_annotations
 
-    def chunk_by_tokens(self, document, num_tokens=None, overlap_tokens=32):
+    def chunk_by_tokens(
+        self, document: str, num_tokens: int | None = None, overlap_tokens: int = 32
+    ) -> tuple[list[str], list[tuple[int, int]]]:
         """
         Given a document (string), return the tokens as chunks and span annotations (start and end indices of chunks).
         Includes overlapping tokens between chunks for better context preservation.
@@ -126,21 +137,23 @@ class Chunker:
 
         return chunks, span_annotations
 
-    def chunk(self, document):
+    def chunk(self, document: str) -> tuple[list[str], list[tuple[int, int]]]:
         if self.chunking_strategy == "sentences":
             return self.chunk_by_sentences(document)
         elif self.chunking_strategy == "tokens":
             return self.chunk_by_tokens(document)
+        else:
+            raise ValueError(f"Invalid chunking strategy: {self.chunking_strategy}")
 
 
 class AsyncCollectionChunker:
-    def __init__(self, collection_name):
+    def __init__(self, collection_name: str):
         self.collection_name = collection_name
         self.chunker = Chunker("sentences", num_sentences=5)
 
     async def create_chunked_reference(
         self, content_field: str, client_manager: ClientManager
-    ):
+    ) -> None:
         async with client_manager.connect_to_async_client() as client:
             chunked_collection = await self.get_chunked_collection(
                 content_field, client
@@ -169,18 +182,75 @@ class AsyncCollectionChunker:
                 # already exists
                 pass
 
-    def get_chunked_collection_name(self):
+    def get_chunked_collection_name(self) -> str:
         return f"ELYSIA_CHUNKED_{self.collection_name.lower()}__"
 
-    async def chunked_collection_exists(self, client):
+    async def chunked_collection_exists(self, client: WeaviateAsyncClient) -> bool:
         return await client.collections.exists(self.get_chunked_collection_name())
 
-    async def get_chunked_collection(self, content_field: str, client):
-        # get properties of main collection
-        data_types = await async_get_collection_weaviate_data_types(
-            client, self.collection_name
-        )
+    async def get_vectoriser(
+        self, content_field: str, client: WeaviateAsyncClient
+    ) -> Configure.Vectorizer:
+        collection_config = await client.collections.get(
+            self.collection_name
+        ).config.get()
 
+        # see if any named vectors exclusively vectorise the content field
+        if collection_config.vector_config is not None:
+            for (
+                named_vector_name,
+                named_vector_config,
+            ) in collection_config.vector_config.items():
+
+                named_vectorizer = named_vector_config.vectorizer
+
+                if (
+                    named_vectorizer.source_properties is not None
+                    and named_vectorizer.source_properties == [content_field]
+                ):
+                    try:
+                        vectorizer = getattr(
+                            _NamedVectors, named_vector_name.replace("-", "_")
+                        )
+
+                        valid_args = inspect.signature(vectorizer).parameters
+                        return vectorizer(
+                            name=named_vector_name,
+                            source_properties=[content_field],
+                            **{
+                                arg: named_vectorizer.model[arg]
+                                for arg in named_vectorizer.model
+                                if arg in valid_args
+                            },
+                        )
+                    except AttributeError as e:
+                        pass
+
+        # if we haven't returned yet, try the overall vectoriser
+        if collection_config.vectorizer_config is not None:
+            try:
+                vectorizer_name = (
+                    collection_config.vectorizer_config.vectorizer.replace("-", "_")
+                )
+                vectorizer = getattr(_Vectorizer, vectorizer_name)
+                valid_args = inspect.signature(vectorizer).parameters
+
+                return vectorizer(
+                    **{
+                        arg: collection_config.vectorizer_config.model[arg]
+                        for arg in collection_config.vectorizer_config.model
+                        if arg in valid_args
+                    }
+                )
+            except AttributeError as e:
+                pass
+
+        # otherwise use default weaviate embedding service
+        return Configure.Vectorizer.text2vec_weaviate(dimensions=256)
+
+    async def get_chunked_collection(
+        self, content_field: str, client: WeaviateAsyncClient
+    ) -> CollectionAsync:
         if await client.collections.exists(self.get_chunked_collection_name()):
             return client.collections.get(self.get_chunked_collection_name())
         else:
@@ -191,7 +261,6 @@ class AsyncCollectionChunker:
                     Property(
                         name="chunk_spans",
                         data_type=DataType.INT_ARRAY,
-                        nested_data_type=DataType.INT,
                     ),
                 ],
                 references=[
@@ -199,10 +268,7 @@ class AsyncCollectionChunker:
                         name="fullDocument", target_collection=self.collection_name
                     )
                 ],
-                vectorizer_config=Configure.Vectorizer.text2vec_openai(
-                    model="text-embedding-3-large",
-                    dimensions=256,  # matryoshka embedding
-                ),
+                vectorizer_config=await self.get_vectoriser(content_field, client),
                 vector_index_config=Configure.VectorIndex.hnsw(
                     quantizer=Configure.VectorIndex.Quantizer.sq()  # scalar quantization
                 ),
@@ -213,21 +279,27 @@ class AsyncCollectionChunker:
         chunks: list[str],
         spans: list[tuple[int, int]],
         content_field: str,
-    ):
+    ) -> list[str]:
         chunked_uuids = []
         for i, (chunk, span) in enumerate(zip(chunks, spans)):
             data_object = {content_field: chunk, "chunk_spans": span}
             chunked_uuids.append(generate_uuid5(data_object))
         return chunked_uuids
 
-    async def chunk_single_object(self, object, content_field: str):
-        chunks, spans = self.chunker.chunk(object.properties[content_field])
+    async def chunk_single_object(
+        self, object: Object, content_field: str
+    ) -> tuple[list[str], list[tuple[int, int]], list[str]]:
+        content_field_value: str = object.properties[content_field]
+        chunks, spans = self.chunker.chunk(content_field_value)
         chunk_uuids = self.generate_uuids(chunks, spans, content_field)
         return chunks, spans, chunk_uuids
 
     async def chunk_objects_parallel(
-        self, unchunked_objects, unchunked_uuids, content_field: str
-    ):
+        self,
+        unchunked_objects: list[Object],
+        unchunked_uuids: list[str],
+        content_field: str,
+    ) -> tuple[dict, dict, dict]:
         tasks = [
             self.chunk_single_object(obj, content_field) for obj in unchunked_objects
         ]
@@ -251,12 +323,12 @@ class AsyncCollectionChunker:
 
     async def insert_chunks(
         self,
-        chunked_collection,
-        original_uuid_to_chunks,
-        original_uuid_to_spans,
-        original_uuid_to_chunk_uuids,
+        chunked_collection: CollectionAsync,
+        original_uuid_to_chunks: dict,
+        original_uuid_to_spans: dict,
+        original_uuid_to_chunk_uuids: dict,
         content_field: str,
-    ):
+    ) -> None:
         data_objects = []
         for original_uuid in original_uuid_to_chunks:
             for i, (chunk, span, uuid) in enumerate(
@@ -284,11 +356,14 @@ class AsyncCollectionChunker:
             chunked_collection.data.insert_many(data_objects)
             for data_objects in data_objects_batches
         ]
-        for task in tasks:
-            await task
-        # await asyncio.gather(*tasks)
 
-    async def insert_references(self, full_collection, original_uuid_to_chunk_uuids):
+        await asyncio.gather(*tasks)
+
+    async def insert_references(
+        self,
+        full_collection: CollectionAsync,
+        original_uuid_to_chunk_uuids: dict,
+    ) -> None:
         references = []
         for original_uuid in original_uuid_to_chunk_uuids:
             for chunk_uuid in original_uuid_to_chunk_uuids[original_uuid]:
@@ -310,17 +385,16 @@ class AsyncCollectionChunker:
             full_collection.data.reference_add_many(references)
             for references in references_batches
         ]
-        for task in tasks:
-            await task
-        # await asyncio.gather(*tasks)
 
-    def get_chunked_objects(self, objects):
+        await asyncio.gather(*tasks)
+
+    def get_chunked_objects(self, objects: list[Object]) -> list[str]:
         """
         Given a list of weaviate objects, find if a reference exists to a chunked object in the separate collection.
         Return the UUIDs of `objects` that have a reference to a chunked object (already have been chunked).
         """
         uuids = []
-        for object in objects.objects:
+        for object in objects:
             if (
                 object.references is not None
                 and "isChunked" in object.references
@@ -336,16 +410,17 @@ class AsyncCollectionChunker:
         return uuids
 
     async def __call__(
-        self, objects, content_field: str, client_manager: ClientManager
-    ):
-        # always create the chunked reference, if it already exists, it will be skipped
-        # self.create_chunked_reference(content_field)
+        self,
+        weaviate_response: QueryReturn,
+        content_field: str,
+        client_manager: ClientManager,
+    ) -> None:
 
         # get all UUIDs of current objects
-        all_uuids = [str(object.uuid) for object in objects.objects]
+        all_uuids = [str(object.uuid) for object in weaviate_response.objects]
 
         # get all UUIDs of chunked objects
-        chunked_uuids = self.get_chunked_objects(objects)
+        chunked_uuids = self.get_chunked_objects(weaviate_response.objects)
 
         # get all UUIDs of unchunked objects - these are the objects that need to be chunked
         unchunked_uuids = [
@@ -354,7 +429,9 @@ class AsyncCollectionChunker:
 
         # get all unchunked objects for chunking and inserting
         unchunked_objects = [
-            object for object in objects.objects if str(object.uuid) in unchunked_uuids
+            object
+            for object in weaviate_response.objects
+            if str(object.uuid) in unchunked_uuids
         ]
 
         # if there are unchunked objects, chunk them

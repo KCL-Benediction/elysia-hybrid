@@ -1,17 +1,14 @@
 import datetime
 import json
 import uuid
+from typing import Any
 
 from weaviate.collections.classes.aggregate import (
-    AggregateBoolean,
     AggregateDate,
-    AggregateGroup,
     AggregateGroupByReturn,
-    AggregateInteger,
     AggregateNumber,
     AggregateReturn,
     AggregateText,
-    GroupByAggregate,
 )
 
 
@@ -37,27 +34,34 @@ def objects_dict_to_str(objects: list) -> str:
     return out
 
 
-def format_datetime(dt: datetime.datetime) -> str:
-    dt = dt.isoformat("T")
-    plus = dt.find("+")
+def format_datetime(dt: datetime.datetime | None) -> str:
+    if dt is None:
+        return ""
+
+    output = dt.isoformat("T")
+    plus = output.find("+")
     if plus != -1:
-        return dt[:plus] + "Z"
+        return output[:plus] + "Z"
     else:
-        return dt + "Z"
+        return output + "Z"
 
 
-def format_dict_to_serialisable(d):
+def format_dict_to_serialisable(d: dict[str, Any], remove_unserialisable: bool = False):
+    if remove_unserialisable:
+        keys_to_remove = []
+
     for key, value in d.items():
         if isinstance(value, datetime.datetime):
             d[key] = format_datetime(value)
 
         elif isinstance(value, dict):
-            format_dict_to_serialisable(value)
+            format_dict_to_serialisable(value, remove_unserialisable)
 
         elif isinstance(value, list):
+            items_to_remove = []
             for i, item in enumerate(value):
                 if isinstance(item, dict):
-                    format_dict_to_serialisable(item)
+                    format_dict_to_serialisable(item, remove_unserialisable)
 
                 elif isinstance(item, datetime.datetime):
                     d[key][i] = format_datetime(item)
@@ -65,57 +69,29 @@ def format_dict_to_serialisable(d):
                 elif isinstance(item, uuid.UUID):
                     d[key][i] = str(item)
 
+                elif remove_unserialisable and not isinstance(
+                    item, (str, int, float, bool, list, dict)
+                ):
+                    items_to_remove.append(i)
+
+            for index in sorted(items_to_remove, reverse=True):
+                del d[key][index]
+
         elif isinstance(value, uuid.UUID):
             d[key] = str(value)
+
+        elif remove_unserialisable and not isinstance(
+            d, (str, int, float, bool, list, dict)
+        ):
+            keys_to_remove.append(key)
+
+    if remove_unserialisable:
+        for key in keys_to_remove:
+            del d[key]
 
 
 def remove_whitespace(text: str) -> str:
     return " ".join(text.split())
-
-
-# def update_current_message(current_message: str, new_message: str):
-#     """
-#     current_message: str - the current message in the conversation history
-#     new_message: str - the new message from the LLM
-#     The new_message is filtered for the <NEW> tags, and anything enclosed in them is returned as the new sentence.
-#     If there are no <NEW> tags, the new message is returned as the new sentence.
-#     Returns:
-#         [0] - the updated message including the new sentence without any tags
-#         [1] - the new sentence
-#     """
-#     # if this is the first message, remove any tags and return the new message
-#     if current_message == "":
-#         if "<NEW>" in new_message:
-#             new_message = new_message.replace("<NEW>", "")
-#         if "</NEW>" in new_message:
-#             new_message = new_message.replace("</NEW>", "")
-
-#         return new_message, new_message
-
-#     # otherwise, find new sentence
-#     if "<NEW>" in new_message and "</NEW>" in new_message:
-#         # check if this is empty
-#         new_sentence = new_message.split("<NEW>")[1]
-#         new_sentence = new_sentence[: new_sentence.find("</NEW>")]
-
-#         if new_sentence == "":
-#             new_sentence = new_message.replace("<NEW>", "").replace("</NEW>", "")
-#             return current_message, new_sentence.split(". ")[-1]
-#         else:
-#             return current_message + " " + new_sentence, new_sentence
-
-#     else:
-#         # backup - in case only one tag gets added
-#         if "<NEW>" in new_message and "</NEW>" not in new_message:
-#             new_sentence = new_message.split("<NEW>")[1]
-#             return current_message + " " + new_sentence, new_sentence
-#         elif "<NEW>" not in new_message and "</NEW>" in new_message:
-#             new_sentence = new_message.split("</NEW>")[0]
-#             return current_message + " " + new_sentence, new_sentence.split(". ")[-1]
-
-#         # if no tags are added, return the last sentence of the new message
-#         else:
-#             return new_message, new_message.split(". ")[-1]
 
 
 def format_aggregation_property(prop):
@@ -207,9 +183,6 @@ def format_aggregation_property(prop):
 def format_aggregation_response(response):
     out = {}
     if isinstance(response, AggregateGroupByReturn):
-        # this gets excluded from the frontend payload
-        if "total_count" in dir(response):
-            out["ELYSIA_NUM_ITEMS"] = response.total_count
 
         for result in response.groups:
             field = result.grouped_by.prop
@@ -238,18 +211,11 @@ def format_aggregation_response(response):
                 out[field]["groups"][result.grouped_by.value][key] = formatted_props
 
     elif isinstance(response, AggregateReturn):
-        # this gets excluded from the frontend payload
-        if "total_count" in dir(response):
-            out["ELYSIA_NUM_ITEMS"] = response.total_count
 
         for field, field_properties in response.properties.items():
             out[field] = {}
             props = format_aggregation_property(field_properties)
             for key, prop in props.items():
                 out[field][key] = prop
-
-    elif isinstance(response, list):
-        for item in response:
-            out.append(format_aggregation_response(item))
 
     return out

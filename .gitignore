@@ -153,4 +153,20 @@ elysia-frontend/
 elysia-frontend/* 
 elysia-frontend/.git/* 
 
-elysia/api/static/*
+# elysia/api/static/*
+
+# resources
+resources.txt
+
+# local user configs
+elysia/api/user_configs/*
+!elysia/api/user_configs/__init__.py
+
+# profiling
+*.prof
+*.austin
+*.echion
+
+# run
+rundocs.sh
+runpy.sh

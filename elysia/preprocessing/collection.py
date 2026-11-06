@@ -832,6 +832,7 @@ async def _preprocess_async(
                         max_sample_size=max_sample_size,
                         num_sample_tokens=num_sample_tokens,
                         force=force,
+                        settings=settings,
                     ):
                         if (
                             result is not None

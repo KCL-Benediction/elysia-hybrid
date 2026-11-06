@@ -196,7 +196,7 @@ class IncorrectToolInitialisation_call_non_async_generator(Tool):
 class TestTools:
 
     base_tree = Tree(
-        debug=True,
+        low_memory=False,
         branch_initialisation="empty",
         settings=Settings.from_default(),
     )
@@ -270,3 +270,8 @@ class TestTools:
         with pytest.raises(TypeError):
             tree = deepcopy(self.base_tree)
             tree.add_tool(IncorrectToolInitialisation_call_non_async_generator)
+
+
+if __name__ == "__main__":
+    test = TestTools()
+    asyncio.run(test.test_tool_available())

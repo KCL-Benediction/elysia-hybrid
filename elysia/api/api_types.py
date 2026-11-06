@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel
 
@@ -23,10 +23,16 @@ class ViewPaginatedCollectionData(BaseModel):
     filter_config: Optional[dict[str, Any]] = {}
 
 
+# pass optional args as None to get defaults
 class InitialiseTreeData(BaseModel):
     user_id: str
     conversation_id: str
-    debug: Optional[bool] = False
+    style: Optional[str] = None
+    agent_description: Optional[str] = None
+    end_goal: Optional[str] = None
+    branch_initialisation: Optional[str] = None
+    low_memory: Optional[bool] = False
+    settings: Optional[dict[str, Any]] = None
 
 
 class NERData(BaseModel):
@@ -102,32 +108,100 @@ class FollowUpSuggestionsData(BaseModel):
     conversation_id: str
 
 
-class DefaultConfigData(BaseModel):
+# TODO: hash the api keys
+class Config(BaseModel):
+    settings: dict[str, Any]
+    style: str
+    agent_description: str
+    end_goal: str
+    branch_initialisation: str
+    config_id: Optional[str] = None
+
+
+class InitialiseUserData(BaseModel):
+    user_id: str
+    default_models: bool
+    settings: Optional[dict[str, Any]] = None
+    style: Optional[str] = "Informative, polite and friendly."
+    agent_description: Optional[str] = (
+        "You search and query Weaviate to satisfy the user's query, providing a concise summary of the results."
+    )
+    end_goal: Optional[str] = (
+        "You have satisfied the user's query, and provided a concise summary of the results. "
+        "Or, you have exhausted all options available, or asked the user for clarification."
+    )
+    branch_initialisation: Optional[Literal["one_branch", "multi_branch", "empty"]] = (
+        "one_branch"
+    )
+
+
+class DefaultModelsUserData(BaseModel):
     user_id: str
 
 
-class ChangeConfigData(BaseModel):
+class DefaultModelsTreeData(BaseModel):
     user_id: str
-    config: dict[str, Any]
+    conversation_id: str
 
 
-class LoadConfigData(BaseModel):
+class EnvironmentSettingsUserData(BaseModel):
     user_id: str
-    config_id: str
+
+
+class ChangeConfigUserData(BaseModel):
+    user_id: str
+    settings: Optional[dict[str, Any]] = None
+    style: Optional[str] = None
+    agent_description: Optional[str] = None
+    end_goal: Optional[str] = None
+    branch_initialisation: Optional[str] = None
+
+
+class ChangeConfigTreeData(BaseModel):
+    user_id: str
+    conversation_id: str
+    settings: Optional[dict[str, Any]] = None
+    style: Optional[str] = None
+    agent_description: Optional[str] = None
+    end_goal: Optional[str] = None
+    branch_initialisation: Optional[Literal["one_branch", "multi_branch", "empty"]] = (
+        None
+    )
 
 
 class SaveConfigData(BaseModel):
     user_id: str
     config_id: str
+    config: Config
+
+
+class LoadConfigUserData(BaseModel):
+    user_id: str
+    config_id: str
+    include_atlas: bool
+    include_branch_initialisation: bool
+    include_settings: bool
+
+
+class LoadConfigTreeData(BaseModel):
+    user_id: str
+    conversation_id: str
+    config_id: str
+    include_atlas: bool
+    include_branch_initialisation: bool
+    include_settings: bool
 
 
 class ListConfigsData(BaseModel):
     user_id: str
 
 
-class ChangeAtlasData(BaseModel):
-    user_id: str
-    conversation_id: str
-    style: str
-    agent_description: str
-    end_goal: str
+# class ChangeAtlasUserData(BaseModel):
+#     user_id: str
+#     atlas: dict[str, str]
+
+
+# class ChangeAtlasTreeData(BaseModel):
+#     user_id: str
+#     conversation_id: str
+#     atlas: dict[str, str]

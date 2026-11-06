@@ -71,8 +71,14 @@ environment.remove(tool_name, name, index)
 which uses the `tool_name` and `name` string identifiers to find the corresponding item.
 The `index` parameter will remove the objects and metadata associated only with that position in the list. E.g., if `index=-1`, then the most recent entry in the list will be deleted. This defaults to `None`, in which case the entire set of objects for `tool_name` and `name` are removed. You can, of course, check the length of items beforehand via `len(environment.find(tool_name, name))` and use that to define the index. Will raise an `IndexError` if that index does not exist.
 
+## The Hidden Environment
+
+Within the environment there is also a dictionary, `environment.hidden_environment`, designed to be used as a store of data that is not shown to the LLM.
+You can save any type of object within this dictionary as it does not need to be converted to string to converted to LLM formatting.
+
+For example, this could be used to save raw retrieval objects that are not converted to their simple object properties, so you can still access the metadata output from the retrieval method that you otherwise wouldn't save inside the object metadata.
 
 ## Some Quick Usecases
 
-- You may want to create a tool that only runs when the environment is non empty, so the `run_if_true` method of the tool [(see here for details)](creating_your_own_tools#run_if_true) returns `not tree_data.environment.is_empty()`.
+- You may want to create a tool that only runs when the environment is non empty, so the `run_if_true` method of the tool [(see here for details)](creating_your_own_tools.md#run_if_true) returns `not tree_data.environment.is_empty()`.
 - Your tool may not want to return any objects to the frontend, so instead of returning specific `Result` objects, you could modify the environment via `.add_objects()`, `.replace()` and `.remove()`. This stores 'private' variables that are not seen by the user unless they can manually inspect the environment.

@@ -80,7 +80,7 @@ For a comprehensive overview of how to get started with Elysia, [view the docume
 The simplest way to use Elysia would be to configure your API keys via the environment variables above, and then run, for example
 ```python
 from elysia import settings, Tree
-settings.default_config()
+settings.default_models()
 
 tree = Tree()
 tree(
@@ -88,4 +88,4 @@ tree(
 )
 ```
 
-The `settings.default_config()` gives the recommended configuration for Elysia - using Gemini 2.0 Flash for both the base model and the complex model, both via OpenRouter.
+The `settings.default_models()` gives the recommended configuration for Elysia - using Gemini 2.0 Flash for both the base model and the complex model, both via OpenRouter.

@@ -30,18 +30,12 @@ async def process(data: dict, websocket: WebSocket, user_manager: UserManager):
         else:
             route = None
 
-        if "mimick" in data:
-            mimick = data["mimick"]
-        else:
-            mimick = False
-
         async for yielded_result in user_manager.process_tree(
             user_id=data["user_id"],
             conversation_id=data["conversation_id"],
             query=data["query"],
             query_id=data["query_id"],
             training_route=route,
-            training_mimick_model=mimick,
             collection_names=data["collection_names"],
         ):
             if asyncio.iscoroutine(yielded_result):

@@ -51,7 +51,7 @@ from elysia.config import (
     load_base_lm,
     load_complex_lm,
 )
-from elysia.util.objects import LMTimer, Timer, TrainingUpdate, TreeUpdate
+from elysia.util.objects import Timer, TrainingUpdate, TreeUpdate
 
 # Util
 from elysia.util.parsing import remove_whitespace
@@ -91,7 +91,7 @@ class Tree:
         end_goal: str = "No end goal provided.",
         user_id: str | None = None,
         conversation_id: str | None = None,
-        debug: bool = False,
+        low_memory: bool = False,
         settings: Settings = environment_settings,
     ):
         # Define base variables of the tree
@@ -117,8 +117,6 @@ class Tree:
         self.decision_nodes: dict[str, DecisionNode] = {}
         self.decision_history = []
         self.tree_index = -1
-        self.base_lm_timer = LMTimer("base_lm")
-        self.complex_lm_timer = LMTimer("complex_lm")
         self.suggestions = []
         self.actions_called = {}
         self.query_id_to_prompt = {}
@@ -127,7 +125,7 @@ class Tree:
         self.store_retrieved_objects = False
 
         # -- Initialise the tree
-        self.set_debug(debug)
+        self.set_low_memory(low_memory)
 
         # Define the inputs to prompts
         self.tree_data = TreeData(
@@ -142,11 +140,18 @@ class Tree:
             recursion_limit=5,
         )
 
+        # initialise the timers
+        self.timer = Timer(
+            timer_names=["base_lm", "complex_lm"],
+            logger=self.settings.logger,
+        )
+
         # Set the initialisations
         self.tools = {}
-        self.set_branch_initialisation(
-            branch_initialisation, style, agent_description, end_goal
-        )
+        self.set_branch_initialisation(branch_initialisation)
+        self.change_style(style)
+        self.change_agent_description(agent_description)
+        self.change_end_goal(end_goal)
 
         self.tools["final_text_response"] = TextResponse()
 
@@ -174,8 +179,8 @@ class Tree:
             )
 
     def get_tree_lms(self):
-        self.base_lm = self.get_lm("base", True) if self.debug else None
-        self.complex_lm = self.get_lm("complex", True) if self.debug else None
+        self.base_lm = self.get_lm("base", True) if not self.low_memory else None
+        self.complex_lm = self.get_lm("complex", True) if not self.low_memory else None
 
     def multi_branch_init(self):
         self.add_branch(
@@ -190,9 +195,7 @@ class Tree:
             """,
             status="Choosing a base-level task...",
         )
-
         self.add_tool(branch_id="base", tool=Summarizer)
-
         self.add_tool(branch_id="base", tool=FakeTextResponse)
 
         self.add_branch(
@@ -210,19 +213,8 @@ class Tree:
             """,
             status="Searching the knowledge base...",
         )
-
         self.add_tool(branch_id="search", tool=Query)
-
         self.add_tool(branch_id="search", tool=Aggregate)
-
-        self.change_style("Informative, polite, and friendly.")
-        self.change_agent_description(
-            "You are designed to search datasets in Weaviate collections."
-        )
-        self.change_end_goal(
-            "To answer the user's question by retrieving data from the knowledge base. "
-            "Try to find the requested data, but this may not always be possible."
-        )
 
     def one_branch_init(self):
         self.add_branch(
@@ -236,21 +228,9 @@ class Tree:
             status="Choosing a base-level task...",
         )
         self.add_tool(branch_id="base", tool=Summarizer)
-
         self.add_tool(branch_id="base", tool=FakeTextResponse)
-
         self.add_tool(branch_id="base", tool=Query)
-
         self.add_tool(branch_id="base", tool=Aggregate)
-
-        self.change_style("Informative, polite, and friendly.")
-        self.change_agent_description(
-            "You are designed to search datasets in Weaviate collections."
-        )
-        self.change_end_goal(
-            "To answer the user's question by retrieving data from the knowledge base. "
-            "Try to find the requested data, but this may not always be possible."
-        )
 
     def empty_init(self):
         self.add_branch(
@@ -267,13 +247,7 @@ class Tree:
     def clear_tree(self):
         self.decision_nodes = {}
 
-    def set_branch_initialisation(
-        self,
-        initialisation: str | None,
-        style: str | None = None,
-        agent_description: str | None = None,
-        end_goal: str | None = None,
-    ):
+    def set_branch_initialisation(self, initialisation: str | None):
         self.clear_tree()
 
         if (
@@ -290,24 +264,25 @@ class Tree:
         else:
             raise ValueError(f"Invalid branch initialisation: {initialisation}")
 
-        # If any of these are provided, override the initialisation
-        if style is not None:
-            self.change_style(style)
-
-        if agent_description is not None:
-            self.change_agent_description(agent_description)
-
-        if end_goal is not None:
-            self.change_end_goal(end_goal)
-
         self.branch_initialisation = initialisation
 
-    def set_debug(self, debug: bool):
-        self.debug = debug
-        self.settings.LOCAL = debug
+    def set_low_memory(self, low_memory: bool):
+        self.low_memory = low_memory
+        self.base_lm = self.get_lm("base", True) if not low_memory else None
+        self.complex_lm = self.get_lm("complex", True) if not low_memory else None
 
-        self.base_lm = self.get_lm("base", True) if debug else None
-        self.complex_lm = self.get_lm("complex", True) if debug else None
+    def default_models(self):
+        self.settings = deepcopy(self.settings)
+        self.settings.default_models()
+
+    def configure(self, **kwargs):
+        """
+        Configure the tree with new settings.
+        Wrapper for the settings.configure() method.
+        Will not affect any settings preceding this (e.g. in TreeManager).
+        """
+        self.settings = deepcopy(self.settings)
+        self.settings.configure(**kwargs)
 
     def change_style(self, style: str):
         self.tree_data.atlas.style = style
@@ -319,7 +294,22 @@ class Tree:
         self.tree_data.atlas.end_goal = end_goal
 
     def get_lm(self, model_type: str, force_load: bool = False):
-        if self.debug and not force_load:
+        """
+        Return the LMs used by the tree.
+        If low_memory is True, the LMs will be loaded in this method.
+        Otherwise, the LMs are already loaded in the tree.
+        If force_load is True, the LMs will be loaded regardless of the low_memory setting.
+
+        Args:
+            model_type (str): The type of model to load.
+                Can be "base" or "complex".
+            force_load (bool): Whether to force the loading of the LMs.
+                Defaults to False.
+
+        Returns:
+            (dspy.LM): The LM object.
+        """
+        if not self.low_memory and not force_load:
             return self.base_lm if model_type == "base" else self.complex_lm
         else:
             return (
@@ -619,6 +609,7 @@ class Tree:
             end=tool_instance.end,
             status=tool_instance.status,
         )
+        self.timer.add_timer(tool_instance.name)
 
         # reconstruct tree
         self._get_root()
@@ -645,6 +636,7 @@ class Tree:
 
         self.decision_nodes[branch_id].remove_option(tool_name)
         del self.tools[tool_name]
+        self.timer.remove_timer(tool_name)
 
         # reconstruct tree
         self._get_root()
@@ -726,9 +718,25 @@ class Tree:
         Args:
             branch_id (str): The id of the branch to remove
         """
-        for branch_id in self.decision_nodes:
-            self.decision_nodes[branch_id].remove_option(branch_id)
-        del self.decision_nodes[branch_id]
+        # Validate branch exists
+        if branch_id not in self.decision_nodes:
+            self.settings.logger.warning(
+                f"Branch {branch_id} not found, nothing to remove."
+            )
+            return
+
+        # Special handling for root node
+        if branch_id == self.root:
+            self.settings.logger.error("Cannot remove root branch.")
+            raise ValueError(
+                "Cannot remove the root branch. Create a new tree instead."
+            )
+
+        for decision_node_id in self.decision_nodes:
+            self.decision_nodes[decision_node_id].remove_option(branch_id)
+
+        if branch_id in self.decision_nodes:
+            del self.decision_nodes[branch_id]
 
         # reconstruct tree
         self._get_root()
@@ -782,7 +790,7 @@ class Tree:
                     "output": None,
                 }
             )
-        if self.debug:
+        if not self.low_memory:
             self.actions_called[self.user_prompt][-1]["output"] = result.objects
         else:
             self.actions_called[self.user_prompt][-1]["output"] = []
@@ -1003,9 +1011,7 @@ class Tree:
 
             # Under normal circumstances decide from the decision node
             else:
-                t = Timer("base_lm")
-
-                t.start()
+                self.timer.start_timer("base_lm")
                 self.current_decision, results = await current_decision_node(
                     tree_data=self.tree_data,
                     lm=base_lm,
@@ -1018,8 +1024,7 @@ class Tree:
                     if action_result is not None:
                         yield action_result
 
-                t.end()
-                self.base_lm_timer.update_avg_time(t.time_taken)
+                self.timer.end_timer("base_lm", "Decision Node")
 
                 # Force text response (later) if model chooses end actions
                 # but no response will be generated from the node, set flag now
@@ -1085,6 +1090,7 @@ class Tree:
 
             # evaluate the action
             if action_fn is not None:
+                self.timer.start_timer(self.current_decision.function_name)
                 async for result in action_fn(
                     tree_data=self.tree_data,
                     inputs=self.current_decision.function_inputs,
@@ -1097,6 +1103,8 @@ class Tree:
                     )
                     if action_result is not None:
                         yield action_result
+
+                self.timer.end_timer(self.current_decision.function_name)
 
             # check if the current node is the end of the tree
             if (
@@ -1149,12 +1157,20 @@ class Tree:
             self.settings.logger.info(
                 f"[bold green]Model identified overall goal as completed![/bold green]"
             )
-            self.settings.logger.debug(
-                f"Time taken: {time.time() - self.start_time:.2f} seconds"
+            self.settings.logger.info(
+                f"Total time taken for decision tree: {time.time() - self.start_time:.2f} seconds"
             )
             self.settings.logger.info(f"Tasks completed:\n")
             for task in self.decision_history:
-                self.settings.logger.info(f"     - {task}")
+                if task in self.timer.timers:
+                    time_taken = self.timer.timers[task]["avg_time"]
+                    self.settings.logger.info(
+                        f"     - {task} ([magenta]Avg. {time_taken:.2f} seconds[/magenta])"
+                    )
+                else:
+                    self.settings.logger.info(
+                        f"     - {task} ([magenta]Unknown avg. time[/magenta])"
+                    )
 
             if close_clients_after_completion:
                 await client_manager.close_clients()

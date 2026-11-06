@@ -16,9 +16,9 @@ from elysia.api.routes import (
     collections,
     config,
     feedback,
+    init,
     processor,
     query,
-    tree,
     utils,
 )
 from elysia.api.services.user import UserManager
@@ -83,13 +83,13 @@ app.add_middleware(
 register_error_handlers(app)
 
 # Include routers
-app.include_router(utils.router, prefix="/api", tags=["utilities"])
-app.include_router(collections.router, prefix="/api", tags=["collections"])
-app.include_router(tree.router, prefix="/api", tags=["tree"])
+app.include_router(init.router, prefix="/init", tags=["init"])
 app.include_router(query.router, prefix="/ws", tags=["websockets"])
 app.include_router(processor.router, prefix="/ws", tags=["websockets"])
-app.include_router(feedback.router, prefix="/api", tags=["feedback"])
-app.include_router(config.router, prefix="/api", tags=["config"])
+app.include_router(collections.router, prefix="/collections", tags=["collections"])
+app.include_router(config.router, prefix="/config", tags=["config"])
+app.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
+app.include_router(utils.router, prefix="/util", tags=["utilities"])
 
 
 # Health check endpoint (kept in main app.py due to its simplicity)

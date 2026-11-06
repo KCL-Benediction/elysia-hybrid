@@ -26,7 +26,7 @@ class TestConfig:
 
         self.reset_global_settings()
 
-    def test_default_config(self):
+    def test_default_models(self):
         """
         Test that the default config is correct
         """

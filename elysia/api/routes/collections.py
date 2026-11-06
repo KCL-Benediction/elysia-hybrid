@@ -32,7 +32,7 @@ from elysia.util.collection import (
 router = APIRouter()
 
 
-@router.post("/collections")
+@router.post("/view")
 async def collections(
     data: UserCollectionsData, user_manager: UserManager = Depends(get_user_manager)
 ):
@@ -167,7 +167,7 @@ async def collections(
         )
 
 
-@router.post("/view_paginated_collection")
+@router.post("/view_paginated")
 async def view_paginated_collection(
     data: ViewPaginatedCollectionData,
     user_manager: UserManager = Depends(get_user_manager),
@@ -296,7 +296,7 @@ async def get_object(
         )
 
 
-@router.post("/collection_metadata")
+@router.post("/view_metadata")
 async def collection_metadata(
     data: CollectionMetadataData, user_manager: UserManager = Depends(get_user_manager)
 ):

@@ -8,6 +8,44 @@ from elysia.tree.objects import TreeData, Atlas
 
 
 class ElysiaChainOfThought(Module):
+    """
+    A custom reasoning DSPy module that reasons step by step in order to predict the output of a task.
+    It will automatically include the most relevant inputs:
+    - The user's prompt
+    - The conversation history
+    - The atlas
+
+    And you can also include optional inputs (by setting their boolean flags on initialisation to `True`):
+    - The environment
+    - The collection schemas
+    - The tasks completed
+
+    You can also specify `collection_names` to only include certain collections in the collection schemas.
+
+    It will automatically output:
+    - The reasoning (model step by step reasoning)
+    - Whether the task is impossible (boolean)
+
+    And optionally output (by setting the boolean flags on initialisation to `True`):
+    - A message update (if `message_update` is `True`), a brief 'update' message to the user.
+
+    You can use this module by calling the `.aforward()` method, passing all your *new* inputs as keyword arguments.
+    You do not need to include keyword arguments for the other inputs, like the `environment`.
+
+    Example:
+    ```python
+    my_module = ElysiaChainOfThought(
+        signature=...,
+        tree_data=...,
+        message_update=True,
+        environment=True,
+        collection_schemas=True,
+        tasks_completed=True,
+    )
+    my_module.aforward(input1=..., input2=...)
+    ```
+    """
+
     def __init__(
         self,
         signature: Type[Signature],
@@ -20,12 +58,11 @@ class ElysiaChainOfThought(Module):
         **config,
     ):
         """
-        A module that reasons step by step in order to predict the output of a task.
-
         Args:
             signature (Type[dspy.Signature]): The signature of the module.
             tree_data (TreeData): Required. The tree data from the Elysia decision tree.
                 Used to input the current state of the tree into the prompt.
+                If you are using this module as part of a tool, the `tree_data` is an input to the tool call.
             message_update (bool): Whether to include a message update input.
                 If True, the LLM output will include a brief 'update' message to the user.
                 This describes the current action the LLM is performing.

@@ -9,10 +9,10 @@ from elysia.api.dependencies.common import get_user_manager
 
 set_log_level("CRITICAL")
 
-from elysia.api.routes.config import default_config
 from elysia.api.routes.query import process
-from elysia.api.api_types import QueryData, DefaultConfigData
+from elysia.api.api_types import QueryData, InitialiseUserData, InitialiseTreeData
 from elysia.tests.dummy_adapter import dummy_adapter
+from elysia.api.routes.init import initialise_user, initialise_tree
 
 
 def read_response(response: JSONResponse):
@@ -39,6 +39,21 @@ class TestQuery:
                 query_id = "test_query"
 
                 websocket = fake_websocket()
+
+                await initialise_user(
+                    InitialiseUserData(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        default_models=True,
+                    )
+                )
+
+                await initialise_tree(
+                    InitialiseTreeData(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                    )
+                )
 
                 out = await process(
                     QueryData(

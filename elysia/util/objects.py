@@ -5,50 +5,63 @@ from copy import deepcopy
 from pydantic import BaseModel
 
 from elysia.util.parsing import format_dict_to_serialisable
+from logging import Logger
 
 
 class Timer:
-    def __init__(self, name: str):
-        self.name = name
-        self.start_time = None
-        self.end_time = None
-        self.time_taken = None
-
-    def start(self):
-        self.start_time = time.perf_counter()
-
-    def end(self, print_time: bool = False, print_name: str | None = None):
-        if print_name is None:
-            print_name = self.name
-        self.end_time = time.perf_counter()
-        self.time_taken = self.end_time - self.start_time
-        if print_time:
-            print(
-                f"[bold green]TIMING[/bold green]: {print_name} took {self.time_taken:.2f} seconds"
-            )
-
-    async def to_frontend(self, **kwargs):
-        return {
-            "type": "timer",
-            "payload": {"name": self.name, "time_taken": self.time_taken},
-        }
-
-
-class LMTimer:
     """
     Simple class to track the average time taken for an LLM call.
     """
 
-    def __init__(self, name: str):
-        self.name = name
-        self.calls = 0
-        self.avg_time = 0
-        self.total_time = 0
+    def __init__(self, timer_names: list[str], logger: Logger):
+        self.timers = {
+            name: {
+                "calls": 0,
+                "avg_time": 0,
+                "total_time": 0,
+                "start_time": None,
+                "end_time": None,
+            }
+            for name in timer_names
+        }
+        self.logger = logger
 
-    def update_avg_time(self, time_taken: float):
-        self.calls += 1
-        self.total_time += time_taken
-        self.avg_time = self.total_time / self.calls
+    def start_timer(self, timer_name: str):
+        self.timers[timer_name]["start_time"] = time.perf_counter()
+
+    def end_timer(self, timer_name: str, call_name: str = ""):
+        if self.timers[timer_name]["start_time"] is None:
+            self.logger.warning(f"Timer {timer_name} has not been started yet!")
+            return
+
+        time_taken = time.perf_counter() - self.timers[timer_name]["start_time"]
+        self.update_avg_time(timer_name, time_taken)
+
+        if call_name != "":
+            self.logger.info(
+                f"Time taken for {call_name} ({timer_name}): {time_taken: .2f} seconds"
+            )
+        else:
+            self.logger.info(f"Time taken for {timer_name}: {time_taken: .2f} seconds")
+
+    def update_avg_time(self, timer_name: str, time_taken: float):
+        self.timers[timer_name]["calls"] += 1
+        self.timers[timer_name]["total_time"] += time_taken
+        self.timers[timer_name]["avg_time"] = (
+            self.timers[timer_name]["total_time"] / self.timers[timer_name]["calls"]
+        )
+
+    def remove_timer(self, timer_name: str):
+        self.timers.pop(timer_name)
+
+    def add_timer(self, timer_name: str):
+        self.timers[timer_name] = {
+            "calls": 0,
+            "avg_time": 0,
+            "total_time": 0,
+            "start_time": None,
+            "end_time": None,
+        }
 
 
 class TreeUpdate:

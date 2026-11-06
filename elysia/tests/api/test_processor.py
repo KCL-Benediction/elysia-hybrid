@@ -7,8 +7,10 @@ import json
 import random
 from elysia.api.api_types import (
     ProcessCollectionData,
+    InitialiseUserData,
 )
 from elysia.api.dependencies.common import get_user_manager
+from elysia.api.routes.init import initialise_user
 from elysia.api.routes.processor import process_collection
 from elysia.util.client import ClientManager
 from elysia.api.core.log import logger, set_log_level
@@ -78,12 +80,15 @@ class TestProcessor:
 
         with dummy_adapter():
             try:
+                await initialise_user(
+                    InitialiseUserData(
+                        user_id="test_user",
+                        default_models=True,
+                    ),
+                    user_manager,
+                )
                 local_user = await user_manager.get_user_local("test_user")
                 client_manager = local_user["client_manager"]
-                local_user["config"].default_config()
-                local_user["config"].configure(
-                    base_model="gpt-4o-mini", base_provider="openai"
-                )
 
                 collection_name = create_collection(client_manager)
 

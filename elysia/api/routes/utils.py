@@ -97,11 +97,11 @@ async def title(data: TitleData, user_manager: UserManager = Depends(get_user_ma
         )
 
     try:
-        config = user_manager.get_user_config(data.user_id)
+        settings = user_manager.users[data.user_id]["tree_manager"].settings
         title_creator = dspy.Predict(TitleCreatorPrompt)
         title = await title_creator.aforward(
             text=data.text,
-            lm=load_base_lm(config),
+            lm=load_base_lm(settings),
         )
         return JSONResponse(
             content={"title": title.title, "error": ""},

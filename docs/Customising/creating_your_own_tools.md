@@ -169,7 +169,7 @@ An easy way to access attributes from the tree (if you are calling an LLM within
 To call this, you can do, for example
 ```python
 from elysia.util.elysia_chain_of_thought import ElysiaChainOfThought
-text_response = ElysiaChainOfThought(
+my_module = ElysiaChainOfThought(
     MyCustomSignature, # a dspy signature needing to be defined
     tree_data=tree_data, # tree_data input from the tool
     message_update: bool = True,
@@ -180,6 +180,11 @@ text_response = ElysiaChainOfThought(
 )
 ```
 By setting the boolean flags for the different variables, you can control the inputs and outputs assigned, whereas some inputs are always included (such as user prompt).
+
+To use the augmented module via `ElysiaChainOfThought`, call the `.aforward()` method of the new module, passing all your *new* inputs as keyword arguments. You do not need to include keyword arguments for the other inputs, like the `environment` or `user_prompt`, they are automatically added, e.g.
+```python
+my_module.aforward(input1=..., input2=...)
+```
 
 [See the description for more details](../Reference/Util.md#elysia.util.elysia_chain_of_thought)
 

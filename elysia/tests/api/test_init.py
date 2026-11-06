@@ -8,9 +8,8 @@ from elysia.api.dependencies.common import get_user_manager
 
 set_log_level("CRITICAL")
 
-from elysia.api.routes.tree import initialise_tree
-from elysia.api.routes.config import default_config
-from elysia.api.api_types import InitialiseTreeData, DefaultConfigData
+from elysia.api.routes.init import initialise_tree, initialise_user
+from elysia.api.api_types import InitialiseTreeData, InitialiseUserData
 
 
 def read_response(response: JSONResponse):
@@ -27,8 +26,11 @@ class TestTree:
             user_id = "test_user"
             conversation_id = "test_conversation"
 
-            out = await default_config(
-                DefaultConfigData(user_id=user_id),
+            out = await initialise_user(
+                InitialiseUserData(
+                    user_id=user_id,
+                    default_models=True,
+                ),
                 user_manager,
             )
             response = read_response(out)
@@ -38,7 +40,7 @@ class TestTree:
                 InitialiseTreeData(
                     user_id=user_id,
                     conversation_id=conversation_id,
-                    debug=True,
+                    low_memory=True,
                 ),
                 user_manager,
             )
@@ -50,7 +52,7 @@ class TestTree:
                 InitialiseTreeData(
                     user_id=user_id + "2",
                     conversation_id=conversation_id + "2",
-                    debug=False,
+                    low_memory=True,
                 ),
                 user_manager,
             )

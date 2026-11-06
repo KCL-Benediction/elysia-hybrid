@@ -20,34 +20,31 @@ except Exception as e:
 
 class Settings:
 
-    # Default settings
-    CLIENT_TIMEOUT: int = os.getenv("CLIENT_TIMEOUT", 3)
-    VERSION = "0.2.0"
-    SETTINGS_ID = str(uuid.uuid4())
+    def __init__(self):
+        # Default settings
+        self.CLIENT_TIMEOUT: int = os.getenv("CLIENT_TIMEOUT", 3)
+        self.SETTINGS_ID = str(uuid.uuid4())
 
-    BASE_MODEL: str | None = None
-    BASE_PROVIDER: str | None = None
-    COMPLEX_MODEL: str | None = None
-    COMPLEX_PROVIDER: str | None = None
+        self.BASE_MODEL: str | None = None
+        self.BASE_PROVIDER: str | None = None
+        self.COMPLEX_MODEL: str | None = None
+        self.COMPLEX_PROVIDER: str | None = None
 
-    BASE_MODEL_LM: LM | None = None
-    COMPLEX_MODEL_LM: LM | None = None
+        self.MODEL_API_BASE: str | None = None
 
-    MODEL_API_BASE: str | None = None
+        self.API_KEYS = {}
 
-    API_KEYS = {}
+        self.logger = logging.getLogger("rich")
+        self.logger.setLevel(logging.INFO)
 
-    logger = logging.getLogger("rich")
-    logger.setLevel(logging.INFO)
+        # Remove any existing handlers before adding a new one
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+        self.logger.addHandler(RichHandler(rich_tracebacks=True, markup=True))
 
-    # Remove any existing handlers before adding a new one
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    logger.addHandler(RichHandler(rich_tracebacks=True, markup=True))
-
-    logger.propagate = False
-    LOGGING_LEVEL = "INFO"
-    LOGGING_LEVEL_INT = 20
+        self.logger.propagate = False
+        self.LOGGING_LEVEL = "INFO"
+        self.LOGGING_LEVEL_INT = 20
 
     def setup_app_logger(self, logger: Logger):
         """
@@ -69,29 +66,28 @@ class Settings:
         self.LOGGING_LEVEL_INT = logging.getLevelNamesMapping()[level]
 
     def set_api_key(self, api_key: str, api_key_name: str):
-        os.environ[api_key_name] = api_key
         self.API_KEYS[api_key_name] = api_key
 
     def get_api_key(self, api_key_name: str):
         return self.API_KEYS[api_key_name]
 
-    def load_config(self, config: dict):
-        for item in config:
-            setattr(self, item, config[item])
+    def load_settings(self, settings: dict):
+        for item in settings:
+            setattr(self, item, settings[item])
 
-        self.load_base_dspy_model()
-        self.load_complex_dspy_model()
+        # self.load_base_dspy_model()
+        # self.load_complex_dspy_model()
         self.logger = logging.getLogger("rich")
         self.logger.setLevel(self.LOGGING_LEVEL)
         self.logger.addHandler(RichHandler(rich_tracebacks=True, markup=True))
 
     @classmethod
-    def from_config(cls, config: dict):
+    def from_dict(cls, settings: dict):
         settings = cls()
-        for item in config:
-            setattr(settings, item, config[item])
-        settings.load_base_dspy_model()
-        settings.load_complex_dspy_model()
+        for item in settings:
+            setattr(settings, item, settings[item])
+        # settings.load_base_dspy_model()
+        # settings.load_complex_dspy_model()
         settings.logger = logging.getLogger("rich")
         settings.logger.setLevel(settings.LOGGING_LEVEL)
         settings.logger.addHandler(RichHandler(rich_tracebacks=True, markup=True))
@@ -101,26 +97,26 @@ class Settings:
     @classmethod
     def from_default(cls):
         settings = cls()
-        settings.default_config()
+        settings.set_from_env()
+        settings.default_models()
         return settings
 
     @classmethod
     def from_env_vars(cls):
         settings = cls()
-        settings.set_config_from_env()
+        settings.set_from_env()
         return settings
 
-    def set_config_from_env(self):
+    def set_from_env(self):
         self.BASE_MODEL = os.getenv("BASE_MODEL", None)
         self.COMPLEX_MODEL = os.getenv("COMPLEX_MODEL", None)
         self.BASE_PROVIDER = os.getenv("BASE_PROVIDER", None)
         self.COMPLEX_PROVIDER = os.getenv("COMPLEX_PROVIDER", None)
         self.MODEL_API_BASE = os.getenv("MODEL_API_BASE", None)
-        self.LOCAL = os.getenv("LOCAL", "1") == "1"
         self.LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "NOTSET")
         self.set_api_keys_from_env()
-        self.load_base_dspy_model()
-        self.load_complex_dspy_model()
+        # self.load_base_dspy_model()
+        # self.load_complex_dspy_model()
 
     def set_api_keys_from_env(self):
         self.WCD_URL = os.getenv("WCD_URL", "")
@@ -140,43 +136,38 @@ class Settings:
         for api_key in self.API_KEYS:
             self.set_api_key(self.API_KEYS[api_key], api_key)
 
-    def default_config(self):
+    def default_models(self):
         # TODO: this could be a lot smarter, checking what api keys are available etc.
         self.BASE_MODEL = os.getenv("BASE_MODEL", "gemini-2.0-flash-001")
         self.COMPLEX_MODEL = os.getenv("COMPLEX_MODEL", "gemini-2.0-flash-001")
         self.BASE_PROVIDER = os.getenv("BASE_PROVIDER", "openrouter/google")
         self.COMPLEX_PROVIDER = os.getenv("COMPLEX_PROVIDER", "openrouter/google")
         self.MODEL_API_BASE = os.getenv("MODEL_API_BASE", None)
-        self.LOCAL = os.getenv("LOCAL", "1") == "1"
-        self.WCD_URL = os.getenv("WCD_URL")
-        self.WCD_API_KEY = os.getenv("WCD_API_KEY")
-        self.set_api_keys_from_env()
-        self.load_base_dspy_model()
-        self.load_complex_dspy_model()
-        self.LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "NOTSET")
-        self.LOGGING_LEVEL_INT = logging.getLevelNamesMapping()[self.LOGGING_LEVEL]
 
-    def load_base_dspy_model(self):
-        if (
-            "LOCAL" in dir(self)
-            and self.LOCAL
-            and "BASE_MODEL" in dir(self)
-            and self.BASE_MODEL
-        ):
-            self.BASE_MODEL_LM = load_base_lm(self)
-        else:
-            self.BASE_MODEL_LM = None
+        # self.load_base_dspy_model()
+        # self.load_complex_dspy_model()
 
-    def load_complex_dspy_model(self):
-        if (
-            "LOCAL" in dir(self)
-            and self.LOCAL
-            and "COMPLEX_MODEL" in dir(self)
-            and self.COMPLEX_MODEL
-        ):
-            self.COMPLEX_MODEL_LM = load_complex_lm(self)
-        else:
-            self.COMPLEX_MODEL_LM = None
+    # def load_base_dspy_model(self):
+    #     if (
+    #         "LOCAL" in dir(self)
+    #         and self.LOCAL
+    #         and "BASE_MODEL" in dir(self)
+    #         and self.BASE_MODEL
+    #     ):
+    #         self.BASE_MODEL_LM = load_base_lm(self)
+    #     else:
+    #         self.BASE_MODEL_LM = None
+
+    # def load_complex_dspy_model(self):
+    #     if (
+    #         "LOCAL" in dir(self)
+    #         and self.LOCAL
+    #         and "COMPLEX_MODEL" in dir(self)
+    #         and self.COMPLEX_MODEL
+    #     ):
+    #         self.COMPLEX_MODEL_LM = load_complex_lm(self)
+    #     else:
+    #         self.COMPLEX_MODEL_LM = None
 
     def reset(self):
         self = Settings()
@@ -196,18 +187,12 @@ class Settings:
             model_api_base: The API base to use (str).
             wcd_url: The Weaviate cloud URL to use (str).
             wcd_api_key: The Weaviate cloud API key to use (str).
-            local: Whether Elysia is running locally (bool).
             logging_level: The logging level to use (str). e.g. "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
             **kwargs: Additional API keys to set. E.g. `openai_apikey="..."`
         """
 
         # convert all kwargs to lowercase for consistency
         kwargs = {kwarg.lower(): kwargs[kwarg] for kwarg in kwargs}
-
-        if "local" in kwargs:
-            assert isinstance(kwargs["local"], bool)
-            self.LOCAL = kwargs["local"]
-            kwargs.pop("local")
 
         if "base_model" in kwargs:
             if "base_provider" not in kwargs:
@@ -231,7 +216,7 @@ class Settings:
             kwargs.pop("base_model")
             kwargs.pop("base_provider")
 
-            self.load_base_dspy_model()
+            # self.load_base_dspy_model()
 
         if "complex_model" in kwargs:
             if "complex_provider" not in kwargs:
@@ -255,7 +240,7 @@ class Settings:
             kwargs.pop("complex_model")
             kwargs.pop("complex_provider")
 
-            self.load_complex_dspy_model()
+            # self.load_complex_dspy_model()
 
         if "model_api_base" in kwargs:
             self.MODEL_API_BASE = kwargs["model_api_base"]
@@ -270,6 +255,7 @@ class Settings:
             kwargs.pop("wcd_api_key")
 
         if "logging_level" in kwargs or "logger_level" in kwargs:
+
             self.LOGGING_LEVEL = (
                 kwargs["logging_level"]
                 if "logging_level" in kwargs
@@ -281,6 +267,31 @@ class Settings:
                 kwargs.pop("logging_level")
             if "logger_level" in kwargs:
                 kwargs.pop("logger_level")
+            if "logging_level_int" in kwargs:
+                kwargs.pop("logging_level_int")
+            if "logger_level_int" in kwargs:
+                kwargs.pop("logger_level_int")
+
+        if "logging_level_int" in kwargs or "logger_level_int" in kwargs:
+
+            self.LOGGING_LEVEL_INT = (
+                kwargs["logging_level_int"]
+                if "logging_level_int" in kwargs
+                else kwargs["logger_level_int"]
+            )
+            self.LOGGING_LEVEL = {
+                v: k for k, v in logging.getLevelNamesMapping().items()
+            }[self.LOGGING_LEVEL_INT]
+            self.logger.setLevel(self.LOGGING_LEVEL)
+
+        if "settings_id" in kwargs:
+            self.SETTINGS_ID = kwargs["settings_id"]
+            kwargs.pop("settings_id")
+
+        if "api_keys" in kwargs and isinstance(kwargs["api_keys"], dict):
+            for key, value in kwargs["api_keys"].items():
+                self.set_api_key(value, key)
+            kwargs.pop("api_keys")
 
         # remainder of kwargs are API keys or saved there
         removed_kwargs = []
@@ -294,7 +305,9 @@ class Settings:
 
         # remaining kwargs are not API keys
         if len(kwargs) > 0:
-            self.logger.warning("Unknown arguments: " + ", ".join(kwargs.keys()))
+            self.logger.warning(
+                "Unknown arguments to configure: " + ", ".join(kwargs.keys())
+            )
 
     def __repr__(self) -> str:
         out = ""
@@ -401,12 +414,12 @@ def load_lm(
 # global settings that should never be used by the frontend
 # but used when using Elysia as a package
 settings = Settings()
-settings.set_config_from_env()
+settings.set_from_env()
 
 
 def reset_settings():
     settings.reset()
-    settings.set_config_from_env()
+    settings.set_from_env()
 
 
 def configure(**kwargs):

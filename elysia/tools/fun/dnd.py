@@ -555,7 +555,7 @@ class ReduceStory(Tool):
 #     from elysia import Tree
 #     from elysia.config import settings
 
-#     settings.default_config()
+#     settings.default_models()
 
 #     tree = Tree(
 #         style="Poetic, flamboyant, engaging, you are a dungeon master! Crafting worlds.",

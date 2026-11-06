@@ -52,6 +52,9 @@ class Environment:
     The environment is initialised with a default "SelfInfo.generic" key, which is a list of one object, containing information about Elysia itself.
 
     You can use various methods to add, remove, replace, and find objects in the environment. See the methods below for more information.
+
+    Within the environment, there is a variable called `hidden_environment`, which is a dictionary of key-value pairs.
+    This is used to store information that is not shown to the LLM, but is instead a 'store' of data that can be used across tools.
     """
 
     def __init__(
@@ -60,6 +63,7 @@ class Environment:
         self_info: bool = True,
     ):
         self.environment = environment
+        self.hidden_environment = {}
         if self_info:
             self.environment["SelfInfo"] = {}
             self.environment["SelfInfo"]["generic"] = [

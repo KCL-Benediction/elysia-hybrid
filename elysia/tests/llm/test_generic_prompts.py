@@ -18,7 +18,7 @@ configure(logging_level="DEBUG")
 
 class TestGenericPrompts:
     base_tree = Tree(
-        debug=True,
+        low_memory=False,
         branch_initialisation="one_branch",
         settings=Settings.from_default(),
     )

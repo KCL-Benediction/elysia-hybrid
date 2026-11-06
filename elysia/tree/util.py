@@ -1,5 +1,5 @@
 import ast
-import os
+from typing import Any
 
 # dspy requires a 'base' LM but this should not be used
 import dspy
@@ -56,7 +56,7 @@ class DecisionNode:
         self,
         id: str,
         instruction: str,
-        options: list[dict[str, str]],
+        options: dict[str, dict[str, str | bool | Tool | None]],
         root: bool = False,
         logger: Logger = None,
     ):

@@ -31,7 +31,7 @@ my_settings = Settings()
 Which you can then configure manually, either by `my_settings.configure(...)` (which takes exactly the same arguments as `configure`), or by choosing one of the default values:
 
 - `my_settings.set_config_from_env()`: the default initialisation of the global settings, where everything that can be set from the environment is set. Otherwise initialised to `None`.
-- `my_settings.default_config()`: the default Elysia config which uses Gemini 2.0 Flash for the base and complex model (unless these models are specified in the environment), and OpenRouter as the provider (unless also specified). This requires an OpenRouter API key.
+- `my_settings.default_models()`: the default Elysia config which uses Gemini 2.0 Flash for the base and complex model (unless these models are specified in the environment), and OpenRouter as the provider (unless also specified). This requires an OpenRouter API key.
 
 The local `Settings` class is actually what the default `configure` argument modifies, but it modifies on a global `settings` object which defaults to `set_config_from_env` on initialisation of the Elysia python package. So you can call these same functions on 
 ```python

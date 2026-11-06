@@ -84,11 +84,11 @@ def construct_decision_prompt(
 
         end_actions: bool = dspy.OutputField(
             description="""
-            Indicates whether to cease actions after completing the selected task.
-            Determine this based on the completion of all possible actions for the prompt.
+            Has the `end_goal` been achieved?
+            Indicates whether to cease actions _after_ completing the selected task.
+            Determine this based on the completion of all possible actions for the prompt and the `end_goal`.
             Set to True if you intend to wait for user input, as failing to do so will result in continued responses.
             Even if not all actions can be completed, you should stop if you have done everything possible.
-            You should follow the `end_goal` for this decision.
             """.strip()
         )
 

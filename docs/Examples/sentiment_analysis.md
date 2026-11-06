@@ -8,7 +8,7 @@ Let's add an extra tool to Elysia that analyses the retrieved data and outputs s
 
 ```python
 from elysia import Tree, settings
-settings.default_config()
+settings.default_models()
 tree = Tree(branch_initialisation = "one_branch")
 ```
 

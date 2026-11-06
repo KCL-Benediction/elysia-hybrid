@@ -6,9 +6,9 @@ from elysia.tree.tree import Tree
 class TestTreeMethods:
 
     def do_query(self, user_prompt: str):
-        elysia.config.settings.default_config()
+        elysia.config.settings.default_models()
         tree = Tree(
-            debug=False,
+            low_memory=False,
         )
         tree.run(
             user_prompt,

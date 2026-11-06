@@ -11,21 +11,21 @@ from elysia.api.dependencies.common import get_user_manager
 
 set_log_level("CRITICAL")
 
-from elysia.api.routes.tree import initialise_tree
+from elysia.api.routes.init import initialise_tree
 from elysia.api.routes.utils import (
     named_entity_recognition,
     title,
     follow_up_suggestions,
     debug,
 )
-from elysia.api.routes.config import default_config
+from elysia.api.routes.init import initialise_user
 from elysia.api.api_types import (
     NERData,
     TitleData,
     FollowUpSuggestionsData,
     DebugData,
     InitialiseTreeData,
-    DefaultConfigData,
+    InitialiseUserData,
 )
 
 
@@ -57,8 +57,11 @@ class TestUtils:
             user_manager = get_user_manager()
             # local_user = user_manager.get_user_local(user_id="test_user")
 
-            out = await default_config(
-                DefaultConfigData(user_id="test_user"),
+            out = await initialise_user(
+                InitialiseUserData(
+                    user_id="test_user",
+                    default_models=True,
+                ),
                 user_manager,
             )
             response = read_response(out)
@@ -96,8 +99,11 @@ class TestUtils:
             user_manager = get_user_manager()
             # local_user = awaituser_manager.get_user_local(user_id="test_user")
 
-            out = await default_config(
-                DefaultConfigData(user_id="test_user"),
+            out = await initialise_user(
+                InitialiseUserData(
+                    user_id="test_user",
+                    default_models=True,
+                ),
                 user_manager,
             )
             response = read_response(out)

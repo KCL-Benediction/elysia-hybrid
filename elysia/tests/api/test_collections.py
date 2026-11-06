@@ -18,6 +18,8 @@ from elysia.api.routes.collections import (
     collection_metadata,
     get_object,
 )
+from elysia.api.routes.init import initialise_user
+from elysia.api.api_types import InitialiseUserData
 
 from elysia.api.core.log import logger, set_log_level
 
@@ -35,6 +37,10 @@ class TestEndpoints:
 
         try:
             user_manager = get_user_manager()
+            await initialise_user(
+                InitialiseUserData(user_id="test_user", default_models=True),
+                user_manager,
+            )
             basic = await collections(
                 UserCollectionsData(user_id="test_user"), user_manager
             )
@@ -47,6 +53,10 @@ class TestEndpoints:
     async def test_collection_metadata(self):
         try:
             user_manager = get_user_manager()
+            await initialise_user(
+                InitialiseUserData(user_id="test_user", default_models=True),
+                user_manager,
+            )
             basic = await collection_metadata(
                 CollectionMetadataData(
                     user_id="test_user",
@@ -63,6 +73,10 @@ class TestEndpoints:
     async def test_get_object(self):
         try:
             user_manager = get_user_manager()
+            await initialise_user(
+                InitialiseUserData(user_id="test_user", default_models=True),
+                user_manager,
+            )
 
             # first manually get a UUID
             user_local = await user_manager.get_user_local("test_user")
@@ -106,6 +120,10 @@ class TestEndpoints:
         try:
 
             user_manager = get_user_manager()
+            await initialise_user(
+                InitialiseUserData(user_id="test_user", default_models=True),
+                user_manager,
+            )
 
             basic = await view_paginated_collection(
                 ViewPaginatedCollectionData(

@@ -12,7 +12,7 @@ setuptools==78.1.0
 pre-commit==4.2.0
 
 # 
-openai==1.61.0
+# openai==1.61.0
 
 # mkdocs
 mkdocs-material[imaging]==9.6.12

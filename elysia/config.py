@@ -64,6 +64,12 @@ provider_to_models = {
         "gemini-2.5-pro",
         "gemini-2.5-flash-lite",
     ],
+    "gemini": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ],
 }
 
 provider_to_api_keys = {
@@ -73,7 +79,6 @@ provider_to_api_keys = {
     "openrouter/anthropic": ["openrouter_api_key"],
     "openrouter/google": ["openrouter_api_key"],
     "gemini": ["gemini_api_key"],
-    "azure": ["azure_api_key", "azure_api_base", "azure_api_version"],
     "groq": ["groq_api_key"],
     "databricks": ["databricks_api_key", "databricks_api_base"],
     "bedrock": ["aws_access_key_id", "aws_secret_access_key", "aws_region_name"],
@@ -86,7 +91,8 @@ def get_available_models(api_keys: list[str]):
     for api_key in api_keys:
         if api_key in api_key_to_provider:
             for provider in api_key_to_provider[api_key]:
-                available_models.extend(provider_to_models[provider])
+                if provider in provider_to_models:
+                    available_models.extend(provider_to_models[provider])
     return list(set(available_models))
 
 
@@ -745,6 +751,14 @@ settings.smart_setup()
 
 DEFAULT_SETTINGS = Settings()
 DEFAULT_SETTINGS.smart_setup()
+
+
+def smart_setup() -> None:
+    settings.smart_setup()
+
+
+def set_from_env() -> None:
+    settings.set_from_env()
 
 
 def reset_settings() -> None:

@@ -56,40 +56,37 @@ class TestTree:
     @pytest.mark.asyncio
     async def test_tree(self):
 
-        try:
-            user_manager = get_user_manager()
-            user_id = "test_user"
-            conversation_id = "test_conversation"
+        user_manager = get_user_manager()
+        user_id = "test_user"
+        conversation_id = "test_conversation"
 
-            out = await initialise_user(
-                user_id,
-                user_manager,
-            )
-            response = read_response(out)
-            assert response["error"] == ""
+        out = await initialise_user(
+            user_id,
+            user_manager,
+        )
+        response = read_response(out)
+        assert response["error"] == ""
 
-            out = await initialise_tree(
-                user_id,
-                conversation_id,
-                InitialiseTreeData(
-                    low_memory=True,
-                ),
-                user_manager,
-            )
+        out = await initialise_tree(
+            user_id,
+            conversation_id,
+            InitialiseTreeData(
+                low_memory=True,
+            ),
+            user_manager,
+        )
 
-            response = read_response(out)
-            assert response["error"] == ""
+        response = read_response(out)
+        assert response["error"] == ""
 
-            out = await initialise_tree(
-                user_id + "2",
-                conversation_id + "2",
-                InitialiseTreeData(
-                    low_memory=True,
-                ),
-                user_manager,
-            )
+        out = await initialise_tree(
+            user_id + "2",
+            conversation_id + "2",
+            InitialiseTreeData(
+                low_memory=True,
+            ),
+            user_manager,
+        )
 
-            response = read_response(out)
-            assert response["error"] != ""  # should error as user doesn't exist
-        finally:
-            await get_user_manager().close_all_clients()
+        response = read_response(out)
+        assert response["error"] != ""  # should error as user doesn't exist

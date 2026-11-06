@@ -90,6 +90,15 @@ Examples:
 
 ## Testing
 
+To run the tests, you need to install the dev extra of Elysia, via
+```bash
+pip install "elysia-ai[dev]"
+```
+or from the source
+```bash
+pip install ".[dev]"
+```
+
 Due to the nature of Elysia's development being heavily involved with LLMs and Weaviate collections, tests are split into two categories:
 
 - `no_reqs`, which have no requirements and deal with the base functionality of Elysia

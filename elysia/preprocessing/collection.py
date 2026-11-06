@@ -7,14 +7,14 @@ from typing import AsyncGenerator
 from weaviate.classes.aggregate import GroupByAggregate
 from weaviate.classes.query import Metrics, Filter
 from weaviate.collections import CollectionAsync
-from weaviate.classes.config import Configure, Property, DataType
+from weaviate.classes.config import Configure, Property, DataType, Tokenization
 
 from elysia.config import nlp, Settings, load_base_lm, ElysiaKeyManager
 from elysia.config import settings as environment_settings
 
 from elysia.util import return_types as rt
 
-from elysia.preprocess.prompt_templates import (
+from elysia.preprocessing.prompt_templates import (
     CollectionSummariserPrompt,
     DataMappingPrompt,
     ReturnTypePrompt,
@@ -191,8 +191,12 @@ async def _evaluate_field_statistics(
             if property in obj and isinstance(obj[property], str):
                 lengths.append(len(nlp(obj[property])))
 
-        out["range"] = [min(lengths), max(lengths)]
-        out["mean"] = sum(lengths) / len(lengths)
+        if len(lengths) == 0:
+            out["range"] = None
+            out["mean"] = None
+        else:
+            out["range"] = [min(lengths), max(lengths)]
+            out["mean"] = sum(lengths) / len(lengths)
         out["date_median"] = None
         out["date_range"] = None
 
@@ -226,8 +230,12 @@ async def _evaluate_field_statistics(
     elif properties[property].endswith("[]"):
         lengths = [len(obj[property]) for obj in sample_objects]
 
-        out["range"] = [min(lengths), max(lengths)]
-        out["mean"] = sum(lengths) / len(lengths)
+        if len(lengths) == 0:
+            out["range"] = None
+            out["mean"] = None
+        else:
+            out["range"] = [min(lengths), max(lengths)]
+            out["mean"] = sum(lengths) / len(lengths)
         out["date_range"] = None
         out["date_median"] = None
 
@@ -636,6 +644,7 @@ async def preprocess_async(
                         Property(
                             name="name",
                             data_type=DataType.TEXT,
+                            tokenization=Tokenization.FIELD,
                         ),
                         Property(
                             name="length",
@@ -823,6 +832,7 @@ async def _preprocess_async(
                         max_sample_size=max_sample_size,
                         num_sample_tokens=num_sample_tokens,
                         force=force,
+                        settings=settings,
                     ):
                         if (
                             result is not None
@@ -848,7 +858,7 @@ async def _preprocess_async(
 
 
 def preprocess(
-    collection_names: list[str],
+    collection_names: str | list[str],
     client_manager: ClientManager | None = None,
     min_sample_size: int = 5,
     max_sample_size: int = 100,
@@ -882,7 +892,8 @@ def preprocess(
     You can change this by setting the `wcd_url` and `wcd_api_key` in the settings, and pass this Settings object to this function.
 
     Args:
-        collection_names (list[str]): The names of the collections to preprocess.
+        collection_names (str | list[str]): The name(s) of the collections to preprocess.
+            Can supply either a single string for one collection, or a list of strings for multiple collections.
         client_manager (ClientManager): The client manager to use.
             If not provided, a new ClientManager will be created using the environment variables/configured settings.
         min_sample_size (int): The minimum number of objects to sample from the collection to evaluate the statistics/summary. Optional, defaults to 10.

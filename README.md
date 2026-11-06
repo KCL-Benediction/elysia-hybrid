@@ -131,7 +131,7 @@ You can connect to your own Weaviate cloud cluster, which will automatically ide
 Collections require being _preprocessed_ for Elysia. In the app, you just click the 'analyze' button in the Data tab. In Python you can do:
 
 ```python
-from elysia.preprocess.collection import preprocess
+from elysia.preprocessing.collection import preprocess
 
 preprocess(collection_names=["YourCollectionName"])
 ```

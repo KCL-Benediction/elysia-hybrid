@@ -12,7 +12,7 @@ from elysia.api.routes.processor import process_collection
 from elysia.api.routes.collections import collection_metadata
 from elysia.util.client import ClientManager
 from elysia.api.core.log import logger, set_log_level
-from elysia.preprocess.collection import (
+from elysia.preprocessing.collection import (
     delete_preprocessed_collection_async,
     preprocessed_collection_exists_async,
 )
@@ -218,7 +218,7 @@ async def test_process_no_api_keys():
         # get config
         response = await get_current_user_config(user_id, user_manager)
         response = read_response(response)
-        config_id = response["config"]["product_id"]
+        config_id = response["config"]["id"]
         config_name = response["config"]["name"]
 
         # remove api keys
@@ -277,8 +277,6 @@ async def test_process_no_api_keys():
         except Exception as e:
             print(f"Can't delete collection: {str(e)}")
             pass
-
-        await user_manager.close_all_clients()
 
 
 @pytest.mark.asyncio
@@ -348,8 +346,6 @@ async def test_process_collection():
             print(f"Can't delete collection: {str(e)}")
             pass
 
-        await user_manager.close_all_clients()
-
 
 @pytest.mark.asyncio
 async def test_collection_metadata():
@@ -409,7 +405,6 @@ async def test_collection_metadata():
         async with client_manager.connect_to_async_client() as client:
             if await client.collections.exists(collection_name):
                 await client.collections.delete(collection_name)
-        await user_manager.close_all_clients()
 
 
 @pytest.mark.asyncio
@@ -532,7 +527,6 @@ async def test_update_metadata():
         async with client_manager.connect_to_async_client() as client:
             if await client.collections.exists(collection_name):
                 await client.collections.delete(collection_name)
-        await user_manager.close_all_clients()
 
 
 @pytest.mark.asyncio
@@ -549,53 +543,45 @@ async def test_delete_metadata():
     # create a collection
     create_named_vectors_collection(client_manager, collection_name)
 
-    try:
+    # preprocess
+    websocket = fake_websocket()
+    await process_collection(
+        ProcessCollectionData(
+            user_id=user_id, collection_name=collection_name
+        ).model_dump(),
+        websocket,
+        user_manager,
+    )
+    for i, result in enumerate(websocket.results):
+        if result["error"] != "":
+            assert (
+                False
+            ), f"({i}) Message i-1: {websocket.results[i-1]['message']}, error: {result['error']}"
 
-        # preprocess
-        websocket = fake_websocket()
-        await process_collection(
-            ProcessCollectionData(
-                user_id=user_id, collection_name=collection_name
-            ).model_dump(),
-            websocket,
-            user_manager,
-        )
+    # check the metadata has been created
+    metadata = await collection_metadata(
+        user_id=user_id,
+        collection_name=collection_name,
+        user_manager=user_manager,
+    )
+    metadata = read_response(metadata)
+    assert metadata["error"] == "", metadata["error"]
+    assert metadata["metadata"] is not {} and metadata["metadata"] is not None
 
-        # check the metadata has been created
-        metadata = await collection_metadata(
-            user_id=user_id,
-            collection_name=collection_name,
-            user_manager=user_manager,
-        )
-        metadata = read_response(metadata)
-        assert metadata["error"] == "", metadata["error"]
-        assert metadata["metadata"] is not {} and metadata["metadata"] is not None
+    # delete the metadata
+    delete_metadata_response = await delete_metadata(
+        user_id=user_id,
+        collection_name=collection_name,
+        user_manager=user_manager,
+    )
+    delete_metadata_response = read_response(delete_metadata_response)
+    assert delete_metadata_response["error"] == "", delete_metadata_response["error"]
 
-        # delete the metadata
-        delete_metadata_response = await delete_metadata(
-            user_id=user_id,
-            collection_name=collection_name,
-            user_manager=user_manager,
-        )
-        delete_metadata_response = read_response(delete_metadata_response)
-        assert delete_metadata_response["error"] == "", delete_metadata_response[
-            "error"
-        ]
-
-        # check that the metadata has been deleted
-        metadata = await collection_metadata(
-            user_id=user_id,
-            collection_name=collection_name,
-            user_manager=user_manager,
-        )
-        metadata = read_response(metadata)
-        assert metadata["error"] != ""
-
-    finally:
-        await user_manager.close_all_clients()
-
-        try:
-            with client_manager.connect_to_client() as client:
-                client.collections.delete(collection_name)
-        except Exception as e:
-            pass
+    # check that the metadata has been deleted
+    metadata = await collection_metadata(
+        user_id=user_id,
+        collection_name=collection_name,
+        user_manager=user_manager,
+    )
+    metadata = read_response(metadata)
+    assert metadata["error"] != ""

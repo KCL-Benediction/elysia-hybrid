@@ -211,20 +211,14 @@ async def test_collections():
     client_manager = ClientManager()
     create_regular_vectorizer_collection(client_manager, collection_name)
 
-    try:
-        user_manager = get_user_manager()
-        await initialise_user_and_tree(user_id, conversation_id)
-        basic = await collections_list(user_id, user_manager)
-        basic = read_response(basic)
-        assert basic["error"] == "", basic["error"]
-        assert collection_name in [
-            collection["name"] for collection in basic["collections"]
-        ]
-    finally:
-        async with client_manager.connect_to_async_client() as client:
-            if await client.collections.exists(collection_name):
-                await client.collections.delete(collection_name)
-        await user_manager.close_all_clients()
+    user_manager = get_user_manager()
+    await initialise_user_and_tree(user_id, conversation_id)
+    basic = await collections_list(user_id, user_manager)
+    basic = read_response(basic)
+    assert basic["error"] == "", basic["error"]
+    assert collection_name in [
+        collection["name"] for collection in basic["collections"]
+    ]
 
 
 @pytest.mark.asyncio
@@ -237,42 +231,38 @@ async def test_get_object():
     client_manager = ClientManager()
     create_regular_vectorizer_collection(client_manager, collection_name)
 
-    try:
-        user_manager = get_user_manager()
-        await initialise_user_and_tree(user_id, conversation_id)
+    user_manager = get_user_manager()
+    await initialise_user_and_tree(user_id, conversation_id)
 
-        # first manually get a UUID
-        user_local = await user_manager.get_user_local(user_id)
-        client_manager = user_local["client_manager"]
-        async with client_manager.connect_to_async_client() as client:
-            collection = client.collections.get(collection_name)
-            response = await collection.query.fetch_objects(limit=1)
-            uuid = str(response.objects[0].uuid)
+    # first manually get a UUID
+    user_local = await user_manager.get_user_local(user_id)
+    client_manager = user_local["client_manager"]
+    async with client_manager.connect_to_async_client() as client:
+        collection = client.collections.get(collection_name)
+        response = await collection.query.fetch_objects(limit=1)
+        uuid = str(response.objects[0].uuid)
 
-        # test with valid UUID
-        basic = await get_object(
-            user_id,
-            collection_name=collection_name,
-            uuid=uuid,
-            user_manager=user_manager,
-        )
+    # test with valid UUID
+    basic = await get_object(
+        user_id,
+        collection_name=collection_name,
+        uuid=uuid,
+        user_manager=user_manager,
+    )
 
-        basic = read_response(basic)
-        assert basic["error"] == ""
+    basic = read_response(basic)
+    assert basic["error"] == ""
 
-        # test with invalid UUID
-        invalid = await get_object(
-            user_id,
-            collection_name=collection_name,
-            uuid="invalid",
-            user_manager=user_manager,
-        )
+    # test with invalid UUID
+    invalid = await get_object(
+        user_id,
+        collection_name=collection_name,
+        uuid="invalid",
+        user_manager=user_manager,
+    )
 
-        invalid = read_response(invalid)
-        assert invalid["error"] != ""
-
-    finally:
-        await user_manager.close_all_clients()
+    invalid = read_response(invalid)
+    assert invalid["error"] != ""
 
 
 @pytest.mark.asyncio
@@ -284,86 +274,82 @@ async def test_view_paginated_collection():
     client_manager = ClientManager()
     create_regular_vectorizer_collection(client_manager, collection_name)
 
-    try:
-        user_manager = get_user_manager()
-        await initialise_user_and_tree(user_id, conversation_id)
+    user_manager = get_user_manager()
+    await initialise_user_and_tree(user_id, conversation_id)
 
-        basic = await view_paginated_collection(
-            user_id,
-            collection_name=collection_name,
-            data=ViewPaginatedCollectionData(
-                query="",
-                page_size=50,
-                page_number=1,
-                sort_on="title",
-                ascending=True,
-                filter_config={},
-            ),
-            user_manager=user_manager,
-        )
-        basic = read_response(basic)
-        assert basic["error"] == ""
+    basic = await view_paginated_collection(
+        user_id,
+        collection_name=collection_name,
+        data=ViewPaginatedCollectionData(
+            query="",
+            page_size=50,
+            page_number=1,
+            sort_on="title",
+            ascending=True,
+            filter_config={},
+        ),
+        user_manager=user_manager,
+    )
+    basic = read_response(basic)
+    assert basic["error"] == ""
 
-        # test with filter
-        filter = await view_paginated_collection(
-            user_id,
-            collection_name=collection_name,
-            data=ViewPaginatedCollectionData(
-                page_size=50,
-                page_number=1,
-                sort_on="title",
-                ascending=True,
-                filter_config={
-                    "type": "all",
-                    "filters": [
-                        {
-                            "field": "product_id",
-                            "operator": "equal",
-                            "value": "prod2",
-                        }
-                    ],
-                },
-            ),
-            user_manager=user_manager,
-        )
-        filter = read_response(filter)
-        assert filter["error"] == ""
+    # test with filter
+    filter = await view_paginated_collection(
+        user_id,
+        collection_name=collection_name,
+        data=ViewPaginatedCollectionData(
+            page_size=50,
+            page_number=1,
+            sort_on="title",
+            ascending=True,
+            filter_config={
+                "type": "all",
+                "filters": [
+                    {
+                        "field": "product_id",
+                        "operator": "equal",
+                        "value": "prod2",
+                    }
+                ],
+            },
+        ),
+        user_manager=user_manager,
+    )
+    filter = read_response(filter)
+    assert filter["error"] == ""
 
-        # test with query
-        query = await view_paginated_collection(
-            user_id,
-            collection_name=collection_name,
-            data=ViewPaginatedCollectionData(
-                query="hello",
-                page_size=50,
-                page_number=1,
-                ascending=True,
-                filter_config={},
-            ),
-            user_manager=user_manager,
-        )
-        query = read_response(query)
-        assert query["error"] == ""
+    # test with query
+    query = await view_paginated_collection(
+        user_id,
+        collection_name=collection_name,
+        data=ViewPaginatedCollectionData(
+            query="hello",
+            page_size=50,
+            page_number=1,
+            ascending=True,
+            filter_config={},
+        ),
+        user_manager=user_manager,
+    )
+    query = read_response(query)
+    assert query["error"] == ""
 
-        # test with out of bounds page number, should return empty list
-        out_of_bounds = await view_paginated_collection(
-            user_id,
-            collection_name=collection_name,
-            data=ViewPaginatedCollectionData(
-                page_size=50,
-                page_number=100,
-                sort_on="title",
-                ascending=True,
-                filter_config={},
-            ),
-            user_manager=user_manager,
-        )
-        out_of_bounds = read_response(out_of_bounds)
-        assert out_of_bounds["error"] == ""
-        assert len(out_of_bounds["items"]) == 0
-
-    finally:
-        await user_manager.close_all_clients()
+    # test with out of bounds page number, should return empty list
+    out_of_bounds = await view_paginated_collection(
+        user_id,
+        collection_name=collection_name,
+        data=ViewPaginatedCollectionData(
+            page_size=50,
+            page_number=100,
+            sort_on="title",
+            ascending=True,
+            filter_config={},
+        ),
+        user_manager=user_manager,
+    )
+    out_of_bounds = read_response(out_of_bounds)
+    assert out_of_bounds["error"] == ""
+    assert len(out_of_bounds["items"]) == 0
 
 
 @pytest.mark.asyncio

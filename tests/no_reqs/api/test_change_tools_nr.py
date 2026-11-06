@@ -72,27 +72,6 @@ async def initialise_user_and_tree(user_id: str, conversation_id: str):
     )
 
 
-async def delete_config_after_completion(
-    user_manager: UserManager, user_id: str, config_id: str
-):
-    client_manager = user_manager.users[user_id][
-        "frontend_config"
-    ].save_location_client_manager
-
-    if client_manager.is_client:
-        async with client_manager.connect_to_async_client() as client:
-            if not await client.collections.exists("ELYSIA_CONFIG__"):
-                return
-
-            collection = client.collections.get("ELYSIA_CONFIG__")
-            uuid = generate_uuid5(config_id)
-            if await collection.data.exists(uuid):
-                await collection.data.delete_by_id(uuid)
-
-    if os.path.exists(f"elysia/api/user_configs/frontend_config_{user_id}.json"):
-        os.remove(f"elysia/api/user_configs/frontend_config_{user_id}.json")
-
-
 @pytest.mark.asyncio
 async def test_tools_exist():
     joke_tool = TellAJoke()
@@ -349,102 +328,89 @@ async def test_add_branch_to_branch():
     conversation_id = "test_conversation_add_branch_to_branch"
     user_manager = get_user_manager()
 
-    try:
-        await initialise_user_and_tree(user_id, conversation_id)
+    await initialise_user_and_tree(user_id, conversation_id)
 
-        # get config_id
-        response = await get_current_user_config(
-            user_id,
-            user_manager,
-        )
-        assert read_response(response)["error"] == ""
-        config_id = read_response(response)["config"]["id"]
-        config_name = read_response(response)["config"]["name"]
+    # get config_id
+    response = await get_current_user_config(
+        user_id,
+        user_manager,
+    )
+    assert read_response(response)["error"] == ""
+    config_id = read_response(response)["config"]["id"]
+    config_name = read_response(response)["config"]["name"]
 
-        # change branch initialisation
-        response = await save_config_user(
-            user_id,
-            config_id,
-            SaveConfigUserData(
-                name=config_name,
-                config={
-                    "branch_initialisation": "multi_branch",
-                },
-                frontend_config={
-                    "save_configs_to_weaviate": False,
-                },
-                default=True,
-            ),
-            user_manager,
-        )
-        assert read_response(response)["error"] == ""
+    # change branch initialisation
+    response = await save_config_user(
+        user_id,
+        config_id,
+        SaveConfigUserData(
+            name=config_name,
+            config={
+                "branch_initialisation": "multi_branch",
+            },
+            frontend_config={
+                "save_configs_to_weaviate": False,
+            },
+            default=True,
+        ),
+        user_manager,
+    )
+    assert read_response(response)["error"] == ""
 
-        # add branch to tree
-        response = await add_branch_to_tree(
-            user_id=user_id,
-            data=AddBranchToTreeData(
-                id="new_branch",
-                description="New Branch Description",
-                instruction="New Branch Instruction",
-                from_branch_id="search",
-                status="New Branch Status",
-                from_tool_ids=[],
-                root=False,
-            ),
-            user_manager=user_manager,
-        )
-        response = read_response(response)
-        assert response["error"] == ""
-        assert response["tree"] is not None
-        assert response["tree"] is not {}
+    # add branch to tree
+    response = await add_branch_to_tree(
+        user_id=user_id,
+        data=AddBranchToTreeData(
+            id="new_branch",
+            description="New Branch Description",
+            instruction="New Branch Instruction",
+            from_branch_id="search",
+            status="New Branch Status",
+            from_tool_ids=[],
+            root=False,
+        ),
+        user_manager=user_manager,
+    )
+    response = read_response(response)
+    assert response["error"] == ""
+    assert response["tree"] is not None
+    assert response["tree"] is not {}
 
-        # check returned tree is correct
-        assert "new_branch" in response["tree"]["options"]["search"]["options"]
-        assert (
-            response["tree"]["options"]["search"]["options"]["new_branch"]["id"]
-            == "new_branch"
-        )
-        assert (
-            response["tree"]["options"]["search"]["options"]["new_branch"][
-                "description"
-            ]
-            == "New Branch Description"
-        )
-        assert (
-            response["tree"]["options"]["search"]["options"]["new_branch"][
-                "instruction"
-            ]
-            == "New Branch Instruction"
-        )
-        assert (
-            response["tree"]["options"]["search"]["options"]["new_branch"]["branch"]
-            is True
-        )
-        assert (
-            response["tree"]["options"]["search"]["options"]["new_branch"]["options"]
-            == {}
-        )
+    # check returned tree is correct
+    assert "new_branch" in response["tree"]["options"]["search"]["options"]
+    assert (
+        response["tree"]["options"]["search"]["options"]["new_branch"]["id"]
+        == "new_branch"
+    )
+    assert (
+        response["tree"]["options"]["search"]["options"]["new_branch"]["description"]
+        == "New Branch Description"
+    )
+    assert (
+        response["tree"]["options"]["search"]["options"]["new_branch"]["instruction"]
+        == "New Branch Instruction"
+    )
+    assert (
+        response["tree"]["options"]["search"]["options"]["new_branch"]["branch"] is True
+    )
+    assert (
+        response["tree"]["options"]["search"]["options"]["new_branch"]["options"] == {}
+    )
 
-        # check tree itself is correct
-        tree = await user_manager.get_tree(user_id, conversation_id)
-        assert "new_branch" in tree.tree["options"]["search"]["options"]
-        assert (
-            tree.tree["options"]["search"]["options"]["new_branch"]["id"]
-            == "new_branch"
-        )
-        assert (
-            tree.tree["options"]["search"]["options"]["new_branch"]["description"]
-            == "New Branch Description"
-        )
-        assert (
-            tree.tree["options"]["search"]["options"]["new_branch"]["instruction"]
-            == "New Branch Instruction"
-        )
-        assert tree.tree["options"]["search"]["options"]["new_branch"]["branch"] is True
-        assert tree.tree["options"]["search"]["options"]["new_branch"]["options"] == {}
-    finally:
-        await user_manager.close_all_clients()
-        await delete_config_after_completion(user_manager, user_id, config_id)
+    # check tree itself is correct
+    tree = await user_manager.get_tree(user_id, conversation_id)
+    assert "new_branch" in tree.tree["options"]["search"]["options"]
+    assert tree.tree["options"]["search"]["options"]["new_branch"]["id"] == "new_branch"
+    assert (
+        tree.tree["options"]["search"]["options"]["new_branch"]["description"]
+        == "New Branch Description"
+    )
+    assert (
+        tree.tree["options"]["search"]["options"]["new_branch"]["instruction"]
+        == "New Branch Instruction"
+    )
+    assert tree.tree["options"]["search"]["options"]["new_branch"]["branch"] is True
+    assert tree.tree["options"]["search"]["options"]["new_branch"]["options"] == {}
 
 
 @pytest.mark.asyncio
@@ -454,140 +420,132 @@ async def test_full_cycle():
 
     user_manager = get_user_manager()
 
-    try:
+    await initialise_user_and_tree(user_id, conversation_id)
 
-        await initialise_user_and_tree(user_id, conversation_id)
+    # get config_id
+    response = await get_current_user_config(
+        user_id,
+        user_manager,
+    )
+    assert read_response(response)["error"] == ""
+    config_id = read_response(response)["config"]["id"]
+    config_name = read_response(response)["config"]["name"]
 
-        # get config_id
-        response = await get_current_user_config(
-            user_id,
-            user_manager,
-        )
-        assert read_response(response)["error"] == ""
-        config_id = read_response(response)["config"]["id"]
-        config_name = read_response(response)["config"]["name"]
+    # change branch initialisation
+    response = await save_config_user(
+        user_id,
+        config_id,
+        SaveConfigUserData(
+            name=config_name,
+            config={
+                "branch_initialisation": "multi_branch",
+            },
+            frontend_config={
+                "save_configs_to_weaviate": False,
+            },
+            default=True,
+        ),
+        user_manager,
+    )
+    assert read_response(response)["error"] == ""
 
-        # change branch initialisation
-        response = await save_config_user(
-            user_id,
-            config_id,
-            SaveConfigUserData(
-                name=config_name,
-                config={
-                    "branch_initialisation": "multi_branch",
-                },
-                frontend_config={
-                    "save_configs_to_weaviate": False,
-                },
-                default=True,
-            ),
-            user_manager,
-        )
-        assert read_response(response)["error"] == ""
+    # add a branch to a tool
+    response = await add_branch_to_tree(
+        user_id=user_id,
+        data=AddBranchToTreeData(
+            id="new_branch",
+            description="New Branch Description",
+            instruction="New Branch Instruction",
+            from_branch_id="search",
+            from_tool_ids=["query"],
+            status="New Branch Status",
+            root=False,
+        ),
+        user_manager=user_manager,
+    )
+    response = read_response(response)
+    assert response["error"] == ""
 
-        # add a branch to a tool
-        response = await add_branch_to_tree(
-            user_id=user_id,
-            data=AddBranchToTreeData(
-                id="new_branch",
-                description="New Branch Description",
-                instruction="New Branch Instruction",
-                from_branch_id="search",
-                from_tool_ids=["query"],
-                status="New Branch Status",
-                root=False,
-            ),
-            user_manager=user_manager,
-        )
-        response = read_response(response)
-        assert response["error"] == ""
-
-        # check the tree is correct
-        assert response["tree"] is not None
-        assert response["tree"] != {}
-        assert (
+    # check the tree is correct
+    assert response["tree"] is not None
+    assert response["tree"] != {}
+    assert (
+        "new_branch"
+        in response["tree"]["options"]["search"]["options"]["query"]["options"]
+    )
+    assert (
+        response["tree"]["options"]["search"]["options"]["query"]["options"][
             "new_branch"
-            in response["tree"]["options"]["search"]["options"]["query"]["options"]
-        )
-        assert (
-            response["tree"]["options"]["search"]["options"]["query"]["options"][
-                "new_branch"
-            ]["id"]
-            == "new_branch"
-        )
+        ]["id"]
+        == "new_branch"
+    )
 
-        # get tree and check there is the new branch
-        tree = await user_manager.get_tree(user_id, conversation_id)
-        assert (
+    # get tree and check there is the new branch
+    tree = await user_manager.get_tree(user_id, conversation_id)
+    assert "new_branch" in tree.tree["options"]["search"]["options"]["query"]["options"]
+    assert (
+        tree.tree["options"]["search"]["options"]["query"]["options"]["new_branch"][
+            "id"
+        ]
+        == "new_branch"
+    )
+
+    # check decision nodes updated
+    assert "new_branch" in tree.decision_nodes
+    assert "search.query" in tree.decision_nodes
+    assert "new_branch" in tree.decision_nodes["search.query"].options
+
+    # add a tool to the new branch
+    response = await add_tool_to_tree(
+        user_id=user_id,
+        data=AddToolToTreeData(
+            tool_name="TellAJoke",
+            branch_id="new_branch",
+            from_tool_ids=[],
+        ),
+        user_manager=user_manager,
+    )
+    response = read_response(response)
+    assert response["error"] == ""
+
+    # check the tree is correct
+    assert (
+        "tell_a_joke"
+        in response["tree"]["options"]["search"]["options"]["query"]["options"][
             "new_branch"
-            in tree.tree["options"]["search"]["options"]["query"]["options"]
-        )
-        assert (
-            tree.tree["options"]["search"]["options"]["query"]["options"]["new_branch"][
-                "id"
-            ]
-            == "new_branch"
-        )
+        ]["options"]
+    )
 
-        # check decision nodes updated
-        assert "new_branch" in tree.decision_nodes
-        assert "search.query" in tree.decision_nodes
-        assert "new_branch" in tree.decision_nodes["search.query"].options
+    # and tree itself is correct
+    tree = await user_manager.get_tree(user_id, conversation_id)
+    assert (
+        "tell_a_joke"
+        in tree.tree["options"]["search"]["options"]["query"]["options"]["new_branch"][
+            "options"
+        ]
+    )
 
-        # add a tool to the new branch
-        response = await add_tool_to_tree(
-            user_id=user_id,
-            data=AddToolToTreeData(
-                tool_name="TellAJoke",
-                branch_id="new_branch",
-                from_tool_ids=[],
-            ),
-            user_manager=user_manager,
-        )
-        response = read_response(response)
-        assert response["error"] == ""
+    # check decision nodes updated
+    assert "tell_a_joke" in tree.decision_nodes["new_branch"].options
 
-        # check the tree is correct
-        assert (
-            "tell_a_joke"
-            in response["tree"]["options"]["search"]["options"]["query"]["options"][
-                "new_branch"
-            ]["options"]
-        )
+    # remove the branch from the tree
+    response = await remove_branch_from_tree(
+        user_id=user_id,
+        data=RemoveBranchFromTreeData(id="new_branch"),
+        user_manager=user_manager,
+    )
+    response = read_response(response)
+    assert response["error"] == ""
 
-        # and tree itself is correct
-        tree = await user_manager.get_tree(user_id, conversation_id)
-        assert (
-            "tell_a_joke"
-            in tree.tree["options"]["search"]["options"]["query"]["options"][
-                "new_branch"
-            ]["options"]
-        )
+    # check the branch and its stemmed tools are gone
+    assert (
+        "new_branch"
+        not in response["tree"]["options"]["search"]["options"]["query"]["options"]
+    )
 
-        # check decision nodes updated
-        assert "tell_a_joke" in tree.decision_nodes["new_branch"].options
-
-        # remove the branch from the tree
-        response = await remove_branch_from_tree(
-            user_id=user_id,
-            data=RemoveBranchFromTreeData(id="new_branch"),
-            user_manager=user_manager,
-        )
-        response = read_response(response)
-        assert response["error"] == ""
-
-        # check the branch and its stemmed tools are gone
-        assert (
-            "new_branch"
-            not in response["tree"]["options"]["search"]["options"]["query"]["options"]
-        )
-
-        tree = await user_manager.get_tree(user_id, conversation_id)
-        assert (
-            "new_branch"
-            not in tree.tree["options"]["search"]["options"]["query"]["options"]
-        )
-        assert "new_branch" not in tree.decision_nodes
-    finally:
-        await user_manager.close_all_clients()
-        await delete_config_after_completion(user_manager, user_id, config_id)
+    tree = await user_manager.get_tree(user_id, conversation_id)
+    assert (
+        "new_branch"
+        not in tree.tree["options"]["search"]["options"]["query"]["options"]
+    )
+    assert "new_branch" not in tree.decision_nodes

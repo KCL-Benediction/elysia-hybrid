@@ -191,8 +191,12 @@ async def _evaluate_field_statistics(
             if property in obj and isinstance(obj[property], str):
                 lengths.append(len(nlp(obj[property])))
 
-        out["range"] = [min(lengths), max(lengths)]
-        out["mean"] = sum(lengths) / len(lengths)
+        if len(lengths) == 0:
+            out["range"] = None
+            out["mean"] = None
+        else:
+            out["range"] = [min(lengths), max(lengths)]
+            out["mean"] = sum(lengths) / len(lengths)
         out["date_median"] = None
         out["date_range"] = None
 
@@ -226,8 +230,12 @@ async def _evaluate_field_statistics(
     elif properties[property].endswith("[]"):
         lengths = [len(obj[property]) for obj in sample_objects]
 
-        out["range"] = [min(lengths), max(lengths)]
-        out["mean"] = sum(lengths) / len(lengths)
+        if len(lengths) == 0:
+            out["range"] = None
+            out["mean"] = None
+        else:
+            out["range"] = [min(lengths), max(lengths)]
+            out["mean"] = sum(lengths) / len(lengths)
         out["date_range"] = None
         out["date_median"] = None
 
@@ -636,6 +644,7 @@ async def preprocess_async(
                         Property(
                             name="name",
                             data_type=DataType.TEXT,
+                            tokenization=Tokenization.FIELD,
                         ),
                         Property(
                             name="length",

@@ -12,7 +12,7 @@ load_dotenv(override=True)
 
 
 def get_frontend_config_file_paths() -> Path:
-    elysia_package_dir = Path(__file__).parent.parent.parent.parent  # Gets to elysia/
+    elysia_package_dir = Path(__file__).parent.parent.parent  # Gets to elysia/
     config_dir = elysia_package_dir / "elysia" / "api" / "user_configs"
     config_files = os.listdir(config_dir)
     return [
@@ -84,6 +84,8 @@ def cleanup_collections(request):
     with client_manager.connect_to_client() as client:
         for collection_name in client.collections.list_all():
             if collection_name.startswith("Test_ELYSIA_"):
+                client.collections.delete(collection_name)
+            elif collection_name.startswith("ELYSIA_Test_"):
                 client.collections.delete(collection_name)
 
     client_manager.client.close()

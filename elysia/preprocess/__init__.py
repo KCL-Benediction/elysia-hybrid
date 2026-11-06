@@ -1,1 +1,1 @@
-from .collection import preprocess
+from .collection import preprocess, preprocess_async

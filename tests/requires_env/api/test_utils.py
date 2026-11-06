@@ -37,39 +37,36 @@ class TestUtils:
         user_id = "test_user_follow_up_suggestions"
         conversation_id = "test_conversation_follow_up_suggestions"
 
-        try:
-            user_manager = get_user_manager()
+        user_manager = get_user_manager()
 
-            out = await initialise_user(
-                user_id,
-                user_manager,
-            )
-            response = read_response(out)
-            assert response["error"] == ""
+        out = await initialise_user(
+            user_id,
+            user_manager,
+        )
+        response = read_response(out)
+        assert response["error"] == ""
 
-            out = await initialise_tree(
-                user_id,
-                conversation_id,
-                InitialiseTreeData(
-                    low_memory=True,
-                ),
-                user_manager,
-            )
-            response = read_response(out)
-            assert response["error"] == ""
+        out = await initialise_tree(
+            user_id,
+            conversation_id,
+            InitialiseTreeData(
+                low_memory=True,
+            ),
+            user_manager,
+        )
+        response = read_response(out)
+        assert response["error"] == ""
 
-            out = await follow_up_suggestions(
-                FollowUpSuggestionsData(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                ),
-                user_manager,
-            )
+        out = await follow_up_suggestions(
+            FollowUpSuggestionsData(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            ),
+            user_manager,
+        )
 
-            response = read_response(out)
-            assert response["error"] == ""
-        finally:
-            await get_user_manager().close_all_clients()
+        response = read_response(out)
+        assert response["error"] == ""
 
 
 if __name__ == "__main__":

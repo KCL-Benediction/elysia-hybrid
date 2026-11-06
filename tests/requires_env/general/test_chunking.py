@@ -120,3 +120,5 @@ async def test_correct_vectoriser():
         async with client_manager.connect_to_async_client() as client:
             await client.collections.delete(collection_name_full)
             await client.collections.delete(collection_name_named)
+
+        await client_manager.close_clients()

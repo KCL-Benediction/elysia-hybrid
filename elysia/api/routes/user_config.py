@@ -145,16 +145,16 @@ async def load_a_config(
         user = await user_manager.get_user_local(user_id)
         frontend_config = user["frontend_config"]
 
-        # check if the user has a valid save location (allow local without API key)
-        if frontend_config.save_location_wcd_url == "" or (
-            frontend_config.save_location_wcd_api_key == ""
-            and not frontend_config.save_location_weaviate_is_local
+        # check if the user has a valid save location
+        if (
+            frontend_config.save_location_wcd_url == ""
+            or frontend_config.save_location_wcd_api_key == ""
         ):
             raise Exception("WCD URL or API key not found.")
 
-        if frontend_config.save_location_wcd_url == "" or (
-            frontend_config.save_location_wcd_api_key == ""
-            and not frontend_config.save_location_weaviate_is_local
+        if (
+            frontend_config.save_location_wcd_url == ""
+            or frontend_config.save_location_wcd_api_key == ""
         ):
             raise Exception(
                 "No valid destination for config load location found. "
@@ -257,6 +257,10 @@ async def new_user_config(
             branch_initialisation="one_branch",
         )
 
+        frontend_config.save_location_wcd_url = frontend_config.save_location_wcd_url
+        frontend_config.save_location_wcd_api_key = (
+            frontend_config.save_location_wcd_api_key
+        )
         frontend_config.config = {
             "save_trees_to_weaviate": True,
             "save_configs_to_weaviate": True,
@@ -441,13 +445,10 @@ async def save_config_user(
         end_goal = user["tree_manager"].config.end_goal
         branch_initialisation = user["tree_manager"].config.branch_initialisation
 
-        # Do not override frontend storage settings with backend settings here;
-        # storage cluster for configs/conversations is controlled via frontend payload
-
-        # Check if the user has a valid save location (allow local without API key)
-        if user["frontend_config"].save_location_wcd_url == "" or (
-            user["frontend_config"].save_location_wcd_api_key == ""
-            and not user["frontend_config"].save_location_weaviate_is_local
+        # Check if the user has a valid save location
+        if (
+            user["frontend_config"].save_location_wcd_url == ""
+            or user["frontend_config"].save_location_wcd_api_key == ""
         ):
             warnings.append(
                 "No valid destination for config save location found. "
@@ -775,11 +776,9 @@ async def list_configs(
             or "save_location_wcd_url" not in user["frontend_config"].__dict__
             or "save_location_wcd_api_key" not in user["frontend_config"].__dict__
             or user["frontend_config"].save_location_wcd_url is None
+            or user["frontend_config"].save_location_wcd_api_key is None
             or user["frontend_config"].save_location_wcd_url == ""
-            or (
-                user["frontend_config"].save_location_wcd_api_key in [None, ""]
-                and not user["frontend_config"].save_location_weaviate_is_local
-            )
+            or user["frontend_config"].save_location_wcd_api_key == ""
         ):
             logger.warning(
                 "In /list_configs API, "

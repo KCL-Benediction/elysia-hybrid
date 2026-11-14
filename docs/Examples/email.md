@@ -150,6 +150,16 @@ result = await send_email(
     body="Preview only.",
 )
 assert result["status"] == "preview_only"
+
+# Missing configuration: reports exactly which settings are absent.
+# Temporarily unset one required SMTP variable before running this check.
+# result = await send_email(
+#     to_address="teammate@example.com",
+#     subject="Test",
+#     body="Configuration check.",
+#     approved=True,
+# )
+# assert result["status"] == "configuration_missing"
 ```
 
 These checks make it easy to confirm the approval boundary before you configure real credentials.
@@ -174,3 +184,14 @@ This example intentionally keeps the implementation small. Before using the patt
 - handle provider-specific requirements such as application passwords, OAuth, or SMTP relay policies.
 
 The important boundary is that Elysia may help **prepare** the message, while trusted application code owns the final approval and delivery step. Avoid bulk or unsolicited sending.
+
+## Next steps
+
+Once the preview flow works locally, try these extensions:
+
+1. Add a small application or UI layer that stores the exact preview and requires a user confirmation before calling `send_email(..., approved=True)`.
+2. Add tests that mock `smtplib.SMTP_SSL` so preview, configuration, successful-send, and failure paths can be verified without contacting a real mail server.
+3. Replace password-based SMTP authentication with your provider's preferred production authentication method, such as OAuth or a managed relay.
+4. Add application-level recipient authorization and rate limits before exposing the tool to end users.
+
+This keeps the example useful as a starting point while preserving a clear rule: the model can draft an email, but only trusted application code should authorize delivery.

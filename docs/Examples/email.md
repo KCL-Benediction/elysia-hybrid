@@ -129,6 +129,31 @@ If the SMTP server accepts the message, the result is:
 }
 ```
 
+## Try the failure paths
+
+Before relying on actual SMTP delivery, you can verify the example's safe behavior without sending anything:
+
+```python
+# Invalid recipient: rejected before any SMTP connection is attempted.
+result = await send_email(
+    to_address="not-an-email-address",
+    subject="Test",
+    body="This should not be sent.",
+    approved=True,
+)
+assert result["status"] == "invalid_recipient"
+
+# No approval: always returns a preview and does not connect to SMTP.
+result = await send_email(
+    to_address="teammate@example.com",
+    subject="Test",
+    body="Preview only.",
+)
+assert result["status"] == "preview_only"
+```
+
+These checks make it easy to confirm the approval boundary before you configure real credentials.
+
 ## Troubleshooting
 
 - **`invalid_recipient`**: Pass a single plain email address such as `name@example.com`.

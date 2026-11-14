@@ -95,23 +95,57 @@ response, objects = tree(
 print(response)
 ```
 
+A preview result will look similar to this:
+
+```python
+{
+    "status": "preview_only",
+    "to": "teammate@example.com",
+    "subject": "Project update",
+    "body": "Hi, the draft is ready for your review. Thanks!",
+}
+```
+
 Review the recipient, subject, and body before any actual send. For a real application, keep approval outside the language model: display the preview to the user, capture an explicit confirmation, and call the function from trusted application code with `approved=True` and the **exact approved fields**. Do not allow a model-generated tool argument alone to count as user approval.
 
 ```python
 # Example only: run after your UI has captured explicit user approval.
-# await send_email(
-#     to_address="teammate@example.com",
-#     subject="Project update",
-#     body="Hi, the draft is ready for your review. Thanks!",
-#     approved=True,
-# )
+result = await send_email(
+    to_address="teammate@example.com",
+    subject="Project update",
+    body="Hi, the draft is ready for your review. Thanks!",
+    approved=True,
+)
+print(result)
+```
+
+If the SMTP server accepts the message, the result is:
+
+```python
+{
+    "status": "sent",
+    "to": "teammate@example.com",
+    "subject": "Project update",
+}
 ```
 
 ## Troubleshooting
 
+- **`invalid_recipient`**: Pass a single plain email address such as `name@example.com`.
 - **`configuration_missing`**: Set all required SMTP environment variables.
 - **`delivery_failed`**: Check the server hostname, TLS port, credentials, and provider permissions. The tool deliberately does not return sensitive exception details.
 - **`preview_only`**: Expected behavior when approval has not been provided.
 - **`sent`**: The SMTP server accepted the message for delivery; check the recipient mailbox to verify receipt.
 
-For production use, add recipient allowlists, rate limiting, audit logging without message secrets, and a trusted approval workflow. Avoid bulk or unsolicited sending.
+## Production considerations
+
+This example intentionally keeps the implementation small. Before using the pattern in a production application:
+
+- restrict recipients with an allowlist or application-level authorization;
+- rate-limit sends and prevent accidental loops or duplicate deliveries;
+- keep credentials in a secret manager rather than source code;
+- record useful audit metadata without logging credentials or sensitive message content;
+- preserve the exact user-approved recipient, subject, and body between preview and send; and
+- handle provider-specific requirements such as application passwords, OAuth, or SMTP relay policies.
+
+The important boundary is that Elysia may help **prepare** the message, while trusted application code owns the final approval and delivery step. Avoid bulk or unsolicited sending.

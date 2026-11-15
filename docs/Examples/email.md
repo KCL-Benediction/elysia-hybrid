@@ -41,84 +41,84 @@ async def send_email(to_address: str, subject: str, body: str, approved: bool = 
         to_address: Recipient email address.
         subject: Subject line.
         body: Plain-text email content.
-        approved: True only after the user has reviewed and approved the exact message.
+        approved: True only after the user has reviewed and approved this exact message.
     """
-    address = parseaddr(to_address)[1]
-    if not address or address != to_address or "@" not in address:
-        return {"status": "invalid_recipient"}
+    _, parsed_address = parseaddr(to_address)
+    if not parsed_address or "@" not in parsed_address or parsed_address != to_address.strip():
+        return {"status": "invalid_recipient", "to": to_address}
 
-    preview = {"to": address, "subject": subject, "body": body}
+    preview = {"to": parsed_address, "subject": subject, "body": body}
     if not approved:
         return {"status": "preview_only", **preview}
 
-    required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
-    missing = [name for name in required if not os.getenv(name)]
+    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"]
+    missing = [name for name in required if not os.environ.get(name)]
     if missing:
-        return {"status": "configuration_missing", "variables": missing}
+        return {"status": "configuration_missing", "missing": missing, **preview}
+
+    try:
+        port = int(os.environ["SMTP_PORT"])
+    except ValueError:
+        return {"status": "configuration_invalid", "field": "SMTP_PORT", **preview}
 
     message = EmailMessage()
     message["From"] = os.environ["SMTP_FROM"]
-    message["To"] = address
+    message["To"] = parsed_address
     message["Subject"] = subject
     message.set_content(body)
 
+    context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL(
-            os.environ["SMTP_HOST"],
-            int(os.getenv("SMTP_PORT", "465")),
-            context=ssl.create_default_context(),
-            timeout=20,
-        ) as smtp:
+        with smtplib.SMTP_SSL(os.environ["SMTP_HOST"], port, context=context) as smtp:
             smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
             smtp.send_message(message)
-    except (OSError, smtplib.SMTPException, ValueError):
-        return {"status": "delivery_failed", "to": address}
+    except (OSError, smtplib.SMTPException) as exc:
+        return {"status": "send_failed", "error": type(exc).__name__, **preview}
 
-    return {"status": "sent", "to": address, "subject": subject}
+    return {"status": "sent", **preview}
 ```
 
-The returned dictionary makes the result available to Elysia. In preview mode, it contains the proposed message; in send mode, it reports whether the SMTP server accepted the message. Acceptance does not guarantee final delivery.
+The returned dictionary is deliberate: Elysia can show the preview to the user before your application allows a second, approved call.
 
 ## Run with Elysia
+
+Register the tool with your Elysia tree, then ask Elysia to prepare a message. Keep the first call in preview mode:
 
 ```python
 from elysia import Tree
 
-tree = Tree()
-tree.add_tool(send_email)
+elysia = Tree(tools=[send_email])
 
-response, objects = tree(
-    "Draft a short, friendly email to teammate@example.com "
-    "with subject 'Project update' saying that the draft is ready for review. "
-    "Preview it only; do not send."
+response = await elysia.async_run(
+    "Draft an email to teammate@example.com with subject 'Project update' and say that the report is ready for review. Preview it only; do not send it."
 )
 print(response)
 ```
 
-A preview result will look similar to this:
+Your application should display the returned recipient, subject and body to the user. Do not automatically turn a model statement such as "looks good" into `approved=True`; the approval should come from an explicit UI or application action.
+
+For example, the preview returned by the tool can look like this:
 
 ```python
 {
     "status": "preview_only",
     "to": "teammate@example.com",
     "subject": "Project update",
-    "body": "Hi, the draft is ready for your review. Thanks!",
+    "body": "The report is ready for review.",
 }
 ```
 
-Review the recipient, subject, and body before any actual send. For a real application, keep approval outside the language model: display the preview to the user, capture an explicit confirmation, and call the function from trusted application code with `approved=True` and the **exact approved fields**. Do not allow a model-generated tool argument alone to count as user approval.
-
 ## Complete the approval flow
 
-A small helper can make the trust boundary explicit: only the application that received the user's approval promotes the preview to a real send. It also verifies that the values being sent still match the values the user reviewed.
+After the user approves the exact preview, trusted application code should make the sending call. A small helper makes that boundary explicit and prevents replacement fields from being introduced between preview and send:
 
 ```python
 async def send_approved_preview(preview: dict, approved: bool):
     if not approved:
         return {"status": "approval_required", **preview}
 
-    expected_keys = {"to", "subject", "body"}
-    if set(preview) != expected_keys:
+    required_fields = {"to", "subject", "body"}
+    if set(preview) != required_fields:
         return {"status": "invalid_preview"}
 
     return await send_email(
@@ -133,21 +133,20 @@ async def send_approved_preview(preview: dict, approved: bool):
 approved_preview = {
     "to": "teammate@example.com",
     "subject": "Project update",
-    "body": "Hi, the draft is ready for your review. Thanks!",
+    "body": "The report is ready for review.",
 }
 
 result = await send_approved_preview(approved_preview, approved=True)
 print(result)
 ```
 
-In a UI or API, store the preview server-side and identify it with an opaque ID. When the user clicks **Send**, load that stored preview and pass its exact values to `send_approved_preview`. Do not regenerate the message between approval and delivery.
-
-If the SMTP server accepts the message, the result is:
+If SMTP accepts the message, the result is:
 
 ```python
 {
     "status": "sent",
     "to": "teammate@example.com",
+    "body": "The report is ready for review.",
     "subject": "Project update",
 }
 ```
@@ -185,15 +184,20 @@ result = await send_approved_preview(
 )
 assert result["status"] == "approval_required"
 
-# Missing configuration: reports exactly which settings are absent.
-# Temporarily unset one required SMTP variable before running this check.
-# result = await send_email(
-#     to_address="teammate@example.com",
-#     subject="Test",
-#     body="Configuration check.",
-#     approved=True,
-# )
-# assert result["status"] == "configuration_missing"
+# Missing configuration: reports exactly which settings are absent without connecting.
+saved_password = os.environ.pop("SMTP_PASSWORD", None)
+try:
+    result = await send_email(
+        to_address="teammate@example.com",
+        subject="Test",
+        body="Configuration check.",
+        approved=True,
+    )
+    assert result["status"] == "configuration_missing"
+    assert "SMTP_PASSWORD" in result["missing"]
+finally:
+    if saved_password is not None:
+        os.environ["SMTP_PASSWORD"] = saved_password
 ```
 
 These checks make it easy to confirm the approval boundary before you configure real credentials.
@@ -203,8 +207,9 @@ These checks make it easy to confirm the approval boundary before you configure 
 - **`invalid_recipient`**: Pass a single plain email address such as `name@example.com`.
 - **`invalid_preview`**: Pass only the exact stored `to`, `subject`, and `body` fields that were shown for approval.
 - **`approval_required`**: The application has not recorded explicit user approval yet.
-- **`configuration_missing`**: Set all required SMTP environment variables.
-- **`delivery_failed`**: Check the server hostname, TLS port, credentials, and provider permissions. The tool deliberately does not return sensitive exception details.
+- **`configuration_missing`**: Set every required `SMTP_*` environment variable before an approved send.
+- **`configuration_invalid`**: Make sure `SMTP_PORT` is an integer such as `465`.
+- **`send_failed`**: Check the SMTP host, port, credentials, TLS support, and provider policy. The tool reports only the exception type so credentials and server details are not leaked into model-visible output.
 - **`preview_only`**: Expected behavior when approval has not been provided.
 - **`sent`**: The SMTP server accepted the message for delivery; check the recipient mailbox to verify receipt.
 

@@ -108,16 +108,39 @@ A preview result will look similar to this:
 
 Review the recipient, subject, and body before any actual send. For a real application, keep approval outside the language model: display the preview to the user, capture an explicit confirmation, and call the function from trusted application code with `approved=True` and the **exact approved fields**. Do not allow a model-generated tool argument alone to count as user approval.
 
+## Complete the approval flow
+
+A small helper can make the trust boundary explicit: only the application that received the user's approval promotes the preview to a real send. It also verifies that the values being sent still match the values the user reviewed.
+
 ```python
-# Example only: run after your UI has captured explicit user approval.
-result = await send_email(
-    to_address="teammate@example.com",
-    subject="Project update",
-    body="Hi, the draft is ready for your review. Thanks!",
-    approved=True,
-)
+async def send_approved_preview(preview: dict, approved: bool):
+    if not approved:
+        return {"status": "approval_required", **preview}
+
+    expected_keys = {"to", "subject", "body"}
+    if set(preview) != expected_keys:
+        return {"status": "invalid_preview"}
+
+    return await send_email(
+        to_address=preview["to"],
+        subject=preview["subject"],
+        body=preview["body"],
+        approved=True,
+    )
+
+
+# Use the exact values that were displayed to the user.
+approved_preview = {
+    "to": "teammate@example.com",
+    "subject": "Project update",
+    "body": "Hi, the draft is ready for your review. Thanks!",
+}
+
+result = await send_approved_preview(approved_preview, approved=True)
 print(result)
 ```
+
+In a UI or API, store the preview server-side and identify it with an opaque ID. When the user clicks **Send**, load that stored preview and pass its exact values to `send_approved_preview`. Do not regenerate the message between approval and delivery.
 
 If the SMTP server accepts the message, the result is:
 
@@ -151,6 +174,17 @@ result = await send_email(
 )
 assert result["status"] == "preview_only"
 
+# Application approval is also required by the helper.
+result = await send_approved_preview(
+    {
+        "to": "teammate@example.com",
+        "subject": "Test",
+        "body": "Still preview only.",
+    },
+    approved=False,
+)
+assert result["status"] == "approval_required"
+
 # Missing configuration: reports exactly which settings are absent.
 # Temporarily unset one required SMTP variable before running this check.
 # result = await send_email(
@@ -167,6 +201,8 @@ These checks make it easy to confirm the approval boundary before you configure 
 ## Troubleshooting
 
 - **`invalid_recipient`**: Pass a single plain email address such as `name@example.com`.
+- **`invalid_preview`**: Pass only the exact stored `to`, `subject`, and `body` fields that were shown for approval.
+- **`approval_required`**: The application has not recorded explicit user approval yet.
 - **`configuration_missing`**: Set all required SMTP environment variables.
 - **`delivery_failed`**: Check the server hostname, TLS port, credentials, and provider permissions. The tool deliberately does not return sensitive exception details.
 - **`preview_only`**: Expected behavior when approval has not been provided.
@@ -189,9 +225,9 @@ The important boundary is that Elysia may help **prepare** the message, while tr
 
 Once the preview flow works locally, try these extensions:
 
-1. Add a small application or UI layer that stores the exact preview and requires a user confirmation before calling `send_email(..., approved=True)`.
-2. Add tests that mock `smtplib.SMTP_SSL` so preview, configuration, successful-send, and failure paths can be verified without contacting a real mail server.
+1. Store previews server-side and expose an approval endpoint that accepts only the preview ID, not replacement message fields.
+2. Add tests that mock `smtplib.SMTP_SSL` so preview, approval, configuration, successful-send, and failure paths can be verified without contacting a real mail server.
 3. Replace password-based SMTP authentication with your provider's preferred production authentication method, such as OAuth or a managed relay.
-4. Add application-level recipient authorization and rate limits before exposing the tool to end users.
+4. Add application-level recipient authorization, rate limits, and idempotency protection before exposing the tool to end users.
 
 This keeps the example useful as a starting point while preserving a clear rule: the model can draft an email, but only trusted application code should authorize delivery.

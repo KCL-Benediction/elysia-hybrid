@@ -110,15 +110,15 @@ For example, the preview returned by the tool can look like this:
 
 ## Complete the approval flow
 
-After the user approves the exact preview, trusted application code should make the sending call. A small helper makes that boundary explicit and prevents replacement fields from being introduced between preview and send:
+After the user approves the exact preview, trusted application code should make the sending call. Keep the complete preview returned by `send_email`, including its status, and validate it before extracting the approved fields. This prevents replacement fields from being introduced between preview and send:
 
 ```python
 async def send_approved_preview(preview: dict, approved: bool):
     if not approved:
         return {"status": "approval_required", **preview}
 
-    required_fields = {"to", "subject", "body"}
-    if set(preview) != required_fields:
+    required_fields = {"status", "to", "subject", "body"}
+    if set(preview) != required_fields or preview.get("status") != "preview_only":
         return {"status": "invalid_preview"}
 
     return await send_email(
@@ -129,8 +129,9 @@ async def send_approved_preview(preview: dict, approved: bool):
     )
 
 
-# Use the exact values that were displayed to the user.
+# Store the exact preview returned by send_email and shown to the user.
 approved_preview = {
+    "status": "preview_only",
     "to": "teammate@example.com",
     "subject": "Project update",
     "body": "The report is ready for review.",
@@ -146,8 +147,8 @@ If SMTP accepts the message, the result is:
 {
     "status": "sent",
     "to": "teammate@example.com",
-    "body": "The report is ready for review.",
     "subject": "Project update",
+    "body": "The report is ready for review.",
 }
 ```
 
@@ -176,6 +177,7 @@ assert result["status"] == "preview_only"
 # Application approval is also required by the helper.
 result = await send_approved_preview(
     {
+        "status": "preview_only",
         "to": "teammate@example.com",
         "subject": "Test",
         "body": "Still preview only.",
@@ -183,6 +185,19 @@ result = await send_approved_preview(
     approved=False,
 )
 assert result["status"] == "approval_required"
+
+# A modified or malformed preview is rejected before any SMTP connection.
+result = await send_approved_preview(
+    {
+        "status": "preview_only",
+        "to": "teammate@example.com",
+        "subject": "Test",
+        "body": "Unexpected replacement body.",
+        "extra": "not part of the approved preview",
+    },
+    approved=True,
+)
+assert result["status"] == "invalid_preview"
 
 # Missing configuration: reports exactly which settings are absent without connecting.
 saved_password = os.environ.pop("SMTP_PASSWORD", None)
@@ -205,7 +220,7 @@ These checks make it easy to confirm the approval boundary before you configure 
 ## Troubleshooting
 
 - **`invalid_recipient`**: Pass a single plain email address such as `name@example.com`.
-- **`invalid_preview`**: Pass only the exact stored `to`, `subject`, and `body` fields that were shown for approval.
+- **`invalid_preview`**: Pass the exact stored preview returned before approval; do not add, remove, or replace fields.
 - **`approval_required`**: The application has not recorded explicit user approval yet.
 - **`configuration_missing`**: Set every required `SMTP_*` environment variable before an approved send.
 - **`configuration_invalid`**: Make sure `SMTP_PORT` is an integer such as `465`.

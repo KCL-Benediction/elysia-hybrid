@@ -35,14 +35,7 @@ from elysia import tool
 
 @tool
 async def send_email(to_address: str, subject: str, body: str, approved: bool = False):
-    """Preview an email or send it after the user explicitly approves.
-
-    Args:
-        to_address: Recipient email address.
-        subject: Subject line.
-        body: Plain-text email content.
-        approved: True only after the user has reviewed and approved this exact message.
-    """
+    """Preview an email or send it after the user explicitly approves."""
     _, parsed_address = parseaddr(to_address)
     if not parsed_address or "@" not in parsed_address or parsed_address != to_address.strip():
         return {"status": "invalid_recipient", "to": to_address}
@@ -78,11 +71,9 @@ async def send_email(to_address: str, subject: str, body: str, approved: bool = 
     return {"status": "sent", **preview}
 ```
 
-The returned dictionary is deliberate: Elysia can show the preview to the user before your application allows a second, approved call.
-
 ## Run with Elysia
 
-Register the tool with your Elysia tree, then ask Elysia to prepare a message. Keep the first call in preview mode:
+Register the tool with your Elysia tree and keep the first call in preview mode:
 
 ```python
 from elysia import Tree
@@ -95,9 +86,7 @@ response = await elysia.async_run(
 print(response)
 ```
 
-Your application should display the returned recipient, subject and body to the user. Do not automatically turn a model statement such as "looks good" into `approved=True`; the approval should come from an explicit UI or application action.
-
-For example, the preview returned by the tool can look like this:
+A preview can look like:
 
 ```python
 {
@@ -110,7 +99,7 @@ For example, the preview returned by the tool can look like this:
 
 ## Complete the approval flow
 
-After the user approves the exact preview, trusted application code should make the sending call. Keep the complete preview returned by `send_email`, including its status, and validate it before extracting the approved fields. This prevents replacement fields from being introduced between preview and send:
+After the user approves the exact preview, trusted application code should make the sending call. Keep and validate the complete preview instead of accepting replacement fields during approval:
 
 ```python
 async def send_approved_preview(preview: dict, approved: bool):
@@ -129,7 +118,6 @@ async def send_approved_preview(preview: dict, approved: bool):
     )
 
 
-# Store the exact preview returned by send_email and shown to the user.
 approved_preview = {
     "status": "preview_only",
     "to": "teammate@example.com",
@@ -141,81 +129,77 @@ result = await send_approved_preview(approved_preview, approved=True)
 print(result)
 ```
 
-If SMTP accepts the message, the result is:
+If SMTP accepts the message, the result has status `sent`.
+
+## Test safely without sending mail
+
+The most useful tests mock the SMTP client so the example can exercise both delivery and failure behavior without contacting a real server:
 
 ```python
-{
-    "status": "sent",
-    "to": "teammate@example.com",
-    "subject": "Project update",
-    "body": "The report is ready for review.",
-}
-```
+import pytest
+from unittest.mock import MagicMock, patch
 
-## Try the failure paths
 
-Before relying on actual SMTP delivery, you can verify the example's safe behavior without sending anything:
+@pytest.fixture
+def smtp_env(monkeypatch):
+    values = {
+        "SMTP_HOST": "smtp.example.com",
+        "SMTP_PORT": "465",
+        "SMTP_USERNAME": "sender@example.com",
+        "SMTP_PASSWORD": "test-password",
+        "SMTP_FROM": "sender@example.com",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
 
-```python
-# Invalid recipient: rejected before any SMTP connection is attempted.
-result = await send_email(
-    to_address="not-an-email-address",
-    subject="Test",
-    body="This should not be sent.",
-    approved=True,
-)
-assert result["status"] == "invalid_recipient"
 
-# No approval: always returns a preview and does not connect to SMTP.
-result = await send_email(
-    to_address="teammate@example.com",
-    subject="Test",
-    body="Preview only.",
-)
-assert result["status"] == "preview_only"
+@pytest.mark.asyncio
+async def test_preview_does_not_connect_to_smtp():
+    with patch("smtplib.SMTP_SSL") as smtp_ssl:
+        result = await send_email(
+            "teammate@example.com", "Project update", "Ready for review."
+        )
 
-# Application approval is also required by the helper.
-result = await send_approved_preview(
-    {
+    assert result["status"] == "preview_only"
+    smtp_ssl.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approved_preview_sends(smtp_env):
+    smtp = MagicMock()
+    smtp_ssl = MagicMock()
+    smtp_ssl.return_value.__enter__.return_value = smtp
+
+    preview = {
         "status": "preview_only",
         "to": "teammate@example.com",
-        "subject": "Test",
-        "body": "Still preview only.",
-    },
-    approved=False,
-)
-assert result["status"] == "approval_required"
+        "subject": "Project update",
+        "body": "Ready for review.",
+    }
 
-# A modified or malformed preview is rejected before any SMTP connection.
-result = await send_approved_preview(
-    {
-        "status": "preview_only",
-        "to": "teammate@example.com",
-        "subject": "Test",
-        "body": "Unexpected replacement body.",
-        "extra": "not part of the approved preview",
-    },
-    approved=True,
-)
-assert result["status"] == "invalid_preview"
+    with patch("smtplib.SMTP_SSL", smtp_ssl):
+        result = await send_approved_preview(preview, approved=True)
 
-# Missing configuration: reports exactly which settings are absent without connecting.
-saved_password = os.environ.pop("SMTP_PASSWORD", None)
-try:
-    result = await send_email(
-        to_address="teammate@example.com",
-        subject="Test",
-        body="Configuration check.",
-        approved=True,
-    )
-    assert result["status"] == "configuration_missing"
-    assert "SMTP_PASSWORD" in result["missing"]
-finally:
-    if saved_password is not None:
-        os.environ["SMTP_PASSWORD"] = saved_password
+    assert result["status"] == "sent"
+    smtp.login.assert_called_once_with("sender@example.com", "test-password")
+    smtp.send_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_smtp_failure_is_reported(smtp_env):
+    smtp_ssl = MagicMock()
+    smtp_ssl.return_value.__enter__.side_effect = smtplib.SMTPException("test failure")
+
+    with patch("smtplib.SMTP_SSL", smtp_ssl):
+        result = await send_email(
+            "teammate@example.com", "Test", "Failure path", approved=True
+        )
+
+    assert result["status"] == "send_failed"
+    assert result["error"] == "SMTPException"
 ```
 
-These checks make it easy to confirm the approval boundary before you configure real credentials.
+Also test the validation paths directly: invalid recipients should return `invalid_recipient`, missing environment settings should return `configuration_missing`, a non-integer port should return `configuration_invalid`, and a changed preview should return `invalid_preview`.
 
 ## Troubleshooting
 
@@ -224,30 +208,19 @@ These checks make it easy to confirm the approval boundary before you configure 
 - **`approval_required`**: The application has not recorded explicit user approval yet.
 - **`configuration_missing`**: Set every required `SMTP_*` environment variable before an approved send.
 - **`configuration_invalid`**: Make sure `SMTP_PORT` is an integer such as `465`.
-- **`send_failed`**: Check the SMTP host, port, credentials, TLS support, and provider policy. The tool reports only the exception type so credentials and server details are not leaked into model-visible output.
+- **`send_failed`**: Check the SMTP host, port, credentials, TLS support, and provider policy.
 - **`preview_only`**: Expected behavior when approval has not been provided.
 - **`sent`**: The SMTP server accepted the message for delivery; check the recipient mailbox to verify receipt.
 
 ## Production considerations
 
-This example intentionally keeps the implementation small. Before using the pattern in a production application:
+Before using this pattern in production:
 
 - restrict recipients with an allowlist or application-level authorization;
-- rate-limit sends and prevent accidental loops or duplicate deliveries;
+- rate-limit sends and add idempotency protection;
 - keep credentials in a secret manager rather than source code;
-- record useful audit metadata without logging credentials or sensitive message content;
-- preserve the exact user-approved recipient, subject, and body between preview and send; and
-- handle provider-specific requirements such as application passwords, OAuth, or SMTP relay policies.
+- preserve the exact user-approved recipient, subject, and body between preview and send;
+- prefer your provider's production authentication method, such as OAuth or a managed relay; and
+- record useful audit metadata without logging credentials or sensitive message content.
 
-The important boundary is that Elysia may help **prepare** the message, while trusted application code owns the final approval and delivery step. Avoid bulk or unsolicited sending.
-
-## Next steps
-
-Once the preview flow works locally, try these extensions:
-
-1. Store previews server-side and expose an approval endpoint that accepts only the preview ID, not replacement message fields.
-2. Add tests that mock `smtplib.SMTP_SSL` so preview, approval, configuration, successful-send, and failure paths can be verified without contacting a real mail server.
-3. Replace password-based SMTP authentication with your provider's preferred production authentication method, such as OAuth or a managed relay.
-4. Add application-level recipient authorization, rate limits, and idempotency protection before exposing the tool to end users.
-
-This keeps the example useful as a starting point while preserving a clear rule: the model can draft an email, but only trusted application code should authorize delivery.
+The important boundary is that Elysia may help **prepare** the message, while trusted application code owns final approval and delivery. Avoid bulk or unsolicited sending.
